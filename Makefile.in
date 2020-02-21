@@ -339,9 +339,10 @@ top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 SUBDIRS = src
 dist_doc_DATA = README
-ACLOCAL_AMFLAGS = -I m4
+EXTRA_DIST = examples
 nodist_include_HEADERS = src/swio.$(FC_MODEXT)
 nodist_data_DATA = swio.mk
+ACLOCAL_AMFLAGS = -I m4
 CLEANFILES = swio.mk
 all: all-recursive
 
@@ -861,6 +862,7 @@ uninstall-am: uninstall-dist_docDATA uninstall-local \
 	tags-am uninstall uninstall-am uninstall-dist_docDATA \
 	uninstall-local uninstall-nodist_dataDATA \
 	uninstall-nodist_includeHEADERS
+
 
 swio.mk:
 	@echo "# ESMF self-describing build dependency makefile fragment" > $(@)

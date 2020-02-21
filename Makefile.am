@@ -1,10 +1,13 @@
 SUBDIRS = src
-dist_doc_DATA = README
 
-ACLOCAL_AMFLAGS = -I m4
+dist_doc_DATA = README
+EXTRA_DIST = examples
 
 nodist_include_HEADERS = src/swio.$(FC_MODEXT)
 nodist_data_DATA = swio.mk
+
+ACLOCAL_AMFLAGS = -I m4
+
 swio.mk:
 	@echo "# ESMF self-describing build dependency makefile fragment" > $(@)
 	@echo >> $(@)

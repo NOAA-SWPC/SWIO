@@ -1,7 +1,7 @@
 module SWIO
 
   !-----------------------------------------------------------------------------
-  ! IPE Component.
+  ! SWIO Component.
   !-----------------------------------------------------------------------------
 
   use ESMF
@@ -14,26 +14,11 @@ module SWIO
     model_label_CheckImport    => label_CheckImport
 
   use COMIO
-  use mpi
+
+  use swio_data
+  use swio_methods
 
   implicit none
-
-  type type_InternalStateStruct
-    integer                 :: logLevel
-    integer                 :: fieldCount
-    character(ESMF_MAXSTR)  :: file_prefix
-    character(ESMF_MAXSTR)  :: file_suffix
-    type(ESMF_Config)       :: config
-    class(COMIO_T), pointer :: io
-  end type
-
-  type type_InternalState
-    type(type_InternalStateStruct), pointer :: wrap
-  end type
-
-  integer, parameter :: nlon = 90
-  integer, parameter :: nlat = 45
-  integer, parameter :: nlev = 25
 
   private
 
@@ -46,9 +31,10 @@ module SWIO
   subroutine SetServices(gcomp, rc)
     type(ESMF_GridComp)  :: gcomp
     integer, intent(out) :: rc
-    
+
+    ! begin
     rc = ESMF_SUCCESS
-    
+
     ! the NUOPC model component will register the generic methods
     call NUOPC_CompDerive(gcomp, model_routine_SS, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
@@ -56,7 +42,7 @@ module SWIO
       file=__FILE__)) &
       return  ! bail out
 
-    ! Provide InitializeP0 to switch from default IPDv00 to IPDv01
+    ! switch to IPDv03
     call ESMF_GridCompSetEntryPoint(gcomp, ESMF_METHOD_INITIALIZE, &
       userRoutine=InitializeP0, phase=0, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
@@ -64,21 +50,36 @@ module SWIO
       file=__FILE__)) &
       return  ! bail out
     
-    ! set entry point for methods that require specific implementation
+    ! set entry points for methods that require specific implementation
+    ! - advertise import fields and set TransferOfferGeomObject attribute.
     call NUOPC_CompSetEntryPoint(gcomp, ESMF_METHOD_INITIALIZE, &
-      phaseLabelList=(/"IPDv02p1"/), userRoutine=InitializeAdvertise, rc=rc)
+      phaseLabelList=(/"IPDv03p1"/), userRoutine=InitializeP1, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
+
+    ! - realize "connected" import fields with TransferActionGeomObject
+    !   equal to "provide".
     call NUOPC_CompSetEntryPoint(gcomp, ESMF_METHOD_INITIALIZE, &
-      phaseLabelList=(/"IPDv02p3"/), userRoutine=InitializeRealize, rc=rc)
+      phaseLabelList=(/"IPDv03p3"/), userRoutine=InitializeP3, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return
+
+    ! - realize "connected" import fields with TransferActionGeomObject
+    !   equal to "accept" on the transferred Grid/Mesh/LocStream objects
+    call NUOPC_CompSetEntryPoint(gcomp, ESMF_METHOD_INITIALIZE, &
+      phaseLabelList=(/"IPDv03p5"/), userRoutine=InitializeP5, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
+
+    ! - set component's initialization status
     call NUOPC_CompSpecialize(gcomp, &
-      specLabel=model_label_DataInitialize, specRoutine=InitializeData, &
+      specLabel=model_label_DataInitialize, specRoutine=DataInitialize, &
       rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
@@ -86,14 +87,23 @@ module SWIO
       return  ! bail out
     
     ! attach specializing method(s)
-    ! -- advance method
+    ! - advance method
     call NUOPC_CompSpecialize(gcomp, specLabel=model_label_Advance, &
       specRoutine=ModelAdvance, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
-    ! -- do not check time stamp of imported fields
+
+    ! - finalize method
+    call NUOPC_CompSpecialize(gcomp, specLabel=model_label_Finalize, &
+     specRoutine=Finalize, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! - do not check time stamp of imported fields
     call ESMF_MethodRemove(gcomp, model_label_CheckImport, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
@@ -101,14 +111,6 @@ module SWIO
       return  ! bail out
     call NUOPC_CompSpecialize(gcomp, specLabel=model_label_CheckImport, &
       specRoutine=NUOPC_NoOp, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-
-    ! -- finalize method
-    call NUOPC_CompSpecialize(gcomp, specLabel=model_label_Finalize, &
-     specRoutine=Finalize, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
@@ -125,65 +127,77 @@ module SWIO
     integer, intent(out)  :: rc
 
     ! local variables
-    integer                    :: stat
-    character(len=5)           :: value
-    character(len=ESMF_MAXSTR) :: msgString
-    type(type_InternalState)   :: is
+    integer                    :: verbosity
+    character(len=ESMF_MAXSTR) :: name, value
+    type(ESMF_Config)          :: config
+
+    ! local parameters
+    character(len=*), parameter :: rName = "InitializeP0"
     
+    ! begin
     rc = ESMF_SUCCESS
 
-    ! Allocate memory for the internal state and set it in the component
-    allocate(is % wrap, stat=stat)
-    if (ESMF_LogFoundAllocError(statusToCheck=stat, &
-      msg="Allocation of internal state memory failed.", &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-    call ESMF_GridCompSetInternalState(gcomp, is, rc)
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
 
-    ! Get component's attributes
-    ! - Verbosity
-    call ESMF_AttributeGet(gcomp, name="Verbosity", value=value, &
-      defaultValue="max", convention="NUOPC", purpose="Instance", rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-    ! convert value to logLevel
-    is % wrap % logLevel = ESMF_UtilString2Int(value, &
-      specialStringList=(/"min","max"/), specialValueList=(/0,255/), rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-    write(msgString,'("IPE: logLevel = ",i0)') is % wrap % logLevel
-    call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=rc)
+    ! intro
+    call NUOPC_LogIntro(name, rName, verbosity, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
 
-    ! Load component's configuration
-    is % wrap % config = ESMF_ConfigCreate(rc=rc)
+    ! get name of config file
+    call ESMF_AttributeGet(gcomp, name="ConfigFile", value=value, &
+      defaultValue="swio.conf", convention="NUOPC", purpose="Instance", rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
-    call ESMF_ConfigLoadFile(is % wrap % config, "swio.conf", rc=rc)
+    if (btest(verbosity,8)) then
+      call ESMF_LogWrite(trim(name)//": ConfigFile = "//trim(value), &
+        ESMF_LOGMSG_INFO, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+    end if
+
+    ! load component's configuration
+    config = ESMF_ConfigCreate(rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+    call ESMF_ConfigLoadFile(config, value, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__, &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! store Config object into gridded component
+    call ESMF_GridCompSet(gcomp, config=config, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
 
     ! Switch to IPDv01 by filtering all other phaseMap entries
     call NUOPC_CompFilterPhaseMap(gcomp, ESMF_METHOD_INITIALIZE, &
-      acceptStringList=(/"IPDv02p"/), rc=rc)
+      acceptStringList=(/"IPDv03p"/), rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__, &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! intro
+    call NUOPC_LogExtro(name, rName, verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
 
@@ -191,204 +205,583 @@ module SWIO
 
   !-----------------------------------------------------------------------------
 
-  subroutine InitializeAdvertise(gcomp, importState, exportState, clock, rc)
-    type(ESMF_GridComp)   :: gcomp
-    type(ESMF_State)     :: importState, exportState
-    type(ESMF_Clock)     :: clock
-    integer, intent(out) :: rc
-    
-    ! local variables
-    logical :: complete
-    integer :: item
-!   integer :: columnCount
-    character(len=ESMF_MAXSTR) :: importFieldName
-    type(type_InternalState) :: is
-
-    ! begin
-    rc = ESMF_SUCCESS
-
-    ! get internal state to access component's configuration
-    call ESMF_GridCompGetInternalState(gcomp, is, rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-
-    ! get import fields from Config
-    ! -- read in fields in table
-    call ESMF_ConfigFindLabel(is % wrap % config, "import_fields::", rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-
-    complete = .false.
-    item = 0
-    do while (.not.complete)
-      item = item + 1
-      ! -- get input field name
-      call ESMF_ConfigNextLine(is % wrap % config, tableEnd=complete, rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-      if (complete) exit
-      call ESMF_ConfigGetAttribute(is % wrap % config, importFieldName, rc=rc )
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-      ! -- advertise field
-      call NUOPC_Advertise(importState, StandardName=importFieldName, rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-    end do
-
-  end subroutine InitializeAdvertise
-  
-  !-----------------------------------------------------------------------------
-
-
-  subroutine InitializeRealize(gcomp, importState, exportState, clock, rc)
+  subroutine InitializeP1(gcomp, importState, exportState, clock, rc)
     type(ESMF_GridComp)  :: gcomp
     type(ESMF_State)     :: importState, exportState
     type(ESMF_Clock)     :: clock
     integer, intent(out) :: rc
     
-    ! local variables    
-    type(ESMF_Field) :: field
-    type(ESMF_Grid)  :: grid
+    ! local variables
+    logical                    :: listEnd
+    integer                    :: item
+    integer                    :: stat
+    integer                    :: verbosity
+    character(len=ESMF_MAXSTR) :: name
+    character(len=ESMF_MAXSTR) :: fieldStandardName
+    character(len=ESMF_MAXSTR) :: transferOfferGeomObject, sharePolicyField
+    character(len=ESMF_MAXSTR) :: msgString
+    type(ESMF_Config)          :: config
+    type(SWIO_InternalState_T) :: is
+    type(SWIO_Data_T), pointer :: this
 
-    integer          :: item
-    integer          :: stat
-    logical          :: isConnected
-    character(ESMF_MAXSTR), pointer :: importFieldNames(:)
-    type(type_InternalState) :: is
+    ! local parameters
+    character(len=*), parameter :: rName = "InitializeP1"
 
+    ! begin
     rc = ESMF_SUCCESS
 
-    ! remove unconnected fields from component's import state
-    nullify(importFieldNames)
-    call NUOPC_GetStateMemberLists(importState, &
-      StandardNameList=importFieldNames, rc=rc)
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
 
-    if (.not.associated(importFieldNames)) return
+    ! intro
+    call NUOPC_LogIntro(name, rName, verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
 
-    do item = 1, size(importFieldNames)
-      isConnected = NUOPC_IsConnected(importState, &
-        fieldName=trim(importFieldNames(item)), rc=rc)
+    ! get component's configuration
+    call ESMF_GridCompGet(gcomp, config=config, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! allocate memory for the internal state and store it into component
+    allocate(is % wrap, stat=stat)
+    if (ESMF_LogFoundAllocError(statusToCheck=stat, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    call ESMF_GridCompSetInternalState(gcomp, is, rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+    this => is % wrap
+    ! initialize internal state
+    this % fieldCount = 0
+    this % gridType   = ""
+    this % filePrefix = ""
+    this % fileSuffix = ""
+    nullify(this % io)
+
+    ! get output grid selection
+    call ESMF_ConfigGetAttribute(config, this % gridType, &
+      label="output_grid_type:", default="none", rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! check if output grid type is supported
+    select case (trim(this % gridType))
+      case ("none")
+      case ("latlon")
+      case default
+        call ESMF_LogSetError(ESMF_RC_NOT_IMPL, &
+          msg=" -  grid type: "//trim(this % gridType), &
+          line=__LINE__, &
+          file=__FILE__, &
+          rcToReturn=rc)
+        return
+    end select
+    if (btest(verbosity,8)) then
+      call ESMF_LogWrite(trim(name)//": gridType = "//trim(this % gridType), &
+        ESMF_LOGMSG_INFO, rc=rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
+        line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
-      if (.not.isConnected) then
-        call ESMF_StateRemove(importState, (/ importFieldNames(item) /), rc=rc)
+    end if
+
+    ! set import fields attributes based on grid type
+    ! -- advertise field
+    if (trim(this % gridType) == "none") then
+      transferOfferGeomObject="cannot provide"
+      sharePolicyField="share"
+    else
+      transferOfferGeomObject="will provide"
+      sharePolicyField="not share"
+    end if
+
+    ! get import fields from Config
+    ! - locate field table
+    call ESMF_ConfigFindLabel(config, "import_fields::", rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! - read field standard name from 1st column and advertise field
+    item = 0
+    do
+      item = item + 1
+      ! get next row
+      call ESMF_ConfigNextLine(config, tableEnd=listEnd, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      if (listEnd) exit
+      ! get input field name
+      call ESMF_ConfigGetAttribute(config, fieldStandardName, rc=rc )
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      ! advertise field
+      call NUOPC_Advertise(importState, StandardName=fieldStandardName, &
+        SharePolicyField=sharePolicyField, &
+        TransferOfferGeomObject=transferOfferGeomObject, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      if (btest(verbosity,8)) then
+        write(msgString,'(a,": import[",i0,"]: ",a)') trim(name), &
+          item, trim(fieldStandardName)
+        call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+        call ESMF_LogWrite(trim(name)//": - GeomObject: "&
+          //trim(transferOfferGeomObject), ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+        call ESMF_LogWrite(trim(name)//": - Field: "&
+          //trim(sharePolicyField), ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+    end do
+    if (btest(verbosity,8)) then
+      if (item == 0) then
+        call ESMF_LogWrite(trim(name)//": import: None", &
+          ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+    end if
+
+    ! extro
+    call NUOPC_LogExtro(name, rName, verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+  end subroutine InitializeP1
+
+  subroutine InitializeP3(gcomp, importState, exportState, clock, rc)
+    type(ESMF_GridComp)  :: gcomp
+    type(ESMF_State)     :: importState, exportState
+    type(ESMF_Clock)     :: clock
+    integer, intent(out) :: rc
+
+    ! local variables
+    logical                         :: createGrid
+    integer                         :: item
+    integer                         :: stat
+    integer                         :: verbosity
+    integer                         :: fieldCount, nameCount
+    character(ESMF_MAXSTR)          :: name
+    character(ESMF_MAXSTR)          :: msgString
+    character(ESMF_MAXSTR)          :: transferAction
+    character(ESMF_MAXSTR), pointer :: connectedList(:)
+    character(ESMF_MAXSTR), pointer :: standardNameList(:)
+    type(ESMF_Field)                :: field
+    type(ESMF_Grid)                 :: grid
+    type(SWIO_InternalState_T)      :: is
+    type(SWIO_Data_T), pointer      :: this
+
+    ! local parameters
+    character(len=*), parameter :: rName = "InitializeP3"
+
+    ! begin
+    rc = ESMF_SUCCESS
+
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! intro
+    call NUOPC_LogIntro(name, rName, verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+     ! get component's internal state
+    call ESMF_GridCompGetInternalState(gcomp, is, rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+    this => is % wrap
+
+    ! determine how many fields are connected
+    nullify(standardNameList)
+    nullify(connectedList)
+    call NUOPC_GetStateMemberLists(importState, &
+      StandardNameList=standardNameList, ConnectedList=connectedList, &
+      nestedFlag=.true., rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    nameCount = 0
+    if (associated(standardNameList)) nameCount = size(standardNameList)
+    fieldCount = 0
+    if (nameCount > 0) then
+      if (associated(connectedList)) then
+        do item = 1, nameCount
+          if (trim(connectedList(item)) == "true") fieldCount = fieldCount + 1
+        end do
+      end if
+      if (fieldCount == 0) nameCount = 0
+    end if
+
+    fieldCount = 0
+    createGrid = .true.
+    do item = 1, nameCount
+      if (trim(connectedList(item)) == "true") then
+        call ESMF_StateGet(importState, &
+          itemName=trim(standardNameList(item)), field=field, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+        call NUOPC_GetAttribute(field, name="TransferActionGeomObject", &
+          value=transferAction, rc=rc)
         if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__, &
+          file=__FILE__)) &
+          return  ! bail out
+              call ESMF_LogWrite(trim(name)//": "//rName &
+                //": TransferActionGeomObject = "//trim(transferAction), ESMF_LOGMSG_INFO, rc=rc)
+              if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                line=__LINE__,  &
+                file=__FILE__)) &
+                return  ! bail out
+        if (trim(transferAction) == "provide") then
+          select case (this % gridType)
+            case ("none")
+              call ESMF_LogSetError(ESMF_RC_NOT_VALID, &
+                msg=ESMF_LOGERR_PASSTHRU, &
+                line=__LINE__, &
+                file=__FILE__, &
+                rcToReturn=rc)
+              exit
+            case ("latlon")
+              if (createGrid) then
+                grid = SWIO_GridCreateLatLon(gcomp, rc=rc)
+                if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                  line=__LINE__,  &
+                  file=__FILE__)) &
+                  return  ! bail out
+                createGrid = .false.
+              end if
+              field = ESMF_FieldCreate(grid, ESMF_TYPEKIND_R8, &
+                name=trim(standardNameList(item)), rc=rc)
+              if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                line=__LINE__,  &
+                file=__FILE__)) &
+                return  ! bail out
+            case default
+              exit
+          end select
+          call NUOPC_Realize(importState, field, rc=rc)
+          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__)) &
+            return  ! bail out
+          fieldCount = fieldCount + 1
+          if (btest(verbosity,8)) then
+            write(msgString,'(a,": import[",i0,"]:",2(1x,a))') trim(name), &
+              item, trim(standardNameList(item)), "(realized on provided GeomObject)"
+            call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=rc)
+            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__)) &
+              return  ! bail out
+          end if
+        end if
+      else
+        call ESMF_StateRemove(importState, standardNameList(item), rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
           file=__FILE__)) &
           return  ! bail out
       end if
     end do
 
-    deallocate(importFieldNames, stat=stat)
-    if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
-      msg="Allocation of internal state memory failed.", &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-    nullify(importFieldNames)
-    
-    ! get internal state to access component's configuration
-    call ESMF_GridCompGetInternalState(gcomp, is, rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
+    this % fieldCount = fieldCount
 
-    ! retrieve all connected import fields
-    call NUOPC_GetStateMemberLists(importState, &
-      StandardNameList=importFieldNames, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-
-    if (associated(importFieldNames)) then
-      is % wrap % fieldCount = size(importFieldNames)
-    else
-      return
+    if (associated(standardNameList)) then
+      deallocate(standardNameList, stat=stat)
+      if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
+        msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+    end if
+    if (associated(connectedList)) then
+      deallocate(connectedList, stat=stat)
+      if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
+        msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
     end if
 
-    call IOGridCreateReg(grid, nlon, nlat, nlev, rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
-
-    ! realize connected Fields in the importState
-    do item = 1, is % wrap % fieldCount
-      field = ESMF_FieldCreate(grid, ESMF_TYPEKIND_R8, &
-        name=trim(importFieldNames(item)), rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__)) &
-        return  ! bail out
-      call NUOPC_Realize(importState, field=field, rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__)) &
-        return  ! bail out
-    end do
-
-    deallocate(importFieldNames)
-
-  end subroutine InitializeRealize
-  
-  !-----------------------------------------------------------------------------
-
-  subroutine InitializeData(gcomp, rc)
-    type(ESMF_GridComp)  :: gcomp
-    integer, intent(out) :: rc
-    
-    ! local variables
-    type(ESMF_VM)            :: vm
-    type(type_InternalState) :: is
-    integer :: comm, iofmt
-    character(len=ESMF_MAXSTR) :: svalue
-    
-    
-    rc = ESMF_SUCCESS
-    
-    ! get internal state to access component's configuration
-    call ESMF_GridCompGetInternalState(gcomp, is, rc)
+    ! extro
+    call NUOPC_LogExtro(name, rName, verbosity, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
 
-    if (is % wrap % fieldCount > 0) then
-      ! get I/O format
-      call ESMF_ConfigGetAttribute(is % wrap % config, svalue, &
-        label="io_format:", default="none", rc=rc)
+  end subroutine InitializeP3
+    
+  subroutine InitializeP5(gcomp, importState, exportState, clock, rc)
+    type(ESMF_GridComp)  :: gcomp
+    type(ESMF_State)     :: importState, exportState
+    type(ESMF_Clock)     :: clock
+    integer, intent(out) :: rc
+
+    ! local variables
+    integer                             :: item
+    integer                             :: stat
+    integer                             :: verbosity
+    integer                             :: nameCount
+    integer                             :: fieldCount
+    character(len=ESMF_MAXSTR)          :: name
+    character(len=ESMF_MAXSTR)          :: msgString
+    character(len=ESMF_MAXSTR)          :: transferAction
+    character(len=ESMF_MAXSTR), pointer :: standardNameList(:)
+    type(ESMF_Field)                    :: field
+    type(SWIO_InternalState_T)          :: is
+    type(SWIO_Data_T), pointer          :: this
+
+    ! local parammeters
+    character(len=*), parameter :: rName = "InitializeP5"
+
+    ! begin
+    rc = ESMF_SUCCESS
+
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! intro
+    call NUOPC_LogIntro(name, rName, verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! get component's internal state
+    call ESMF_GridCompGetInternalState(gcomp, is, rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+    this => is % wrap
+
+    fieldCount = 0
+    if (trim(this % gridType) == "none") then
+      ! realize fields with TransferActionGeomObject "accept"
+      nullify(standardNameList)
+      call NUOPC_GetStateMemberLists(importState, &
+        StandardNameList=standardNameList, nestedFlag=.true., rc=rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
-      print *,'SWIO: io_format: ' // trim(svalue)
+
+      nameCount = 0
+      if (associated(standardNameList)) nameCount = size(standardNameList)
+
+      do item = 1, nameCount
+        call ESMF_StateGet(importState, &
+          itemName=trim(standardNameList(item)), field=field, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+        call NUOPC_GetAttribute(field, name="TransferActionGeomObject", &
+          value=transferAction, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__, &
+          file=__FILE__)) &
+          return  ! bail out
+              call ESMF_LogWrite(trim(name)//": "//rName &
+                //": TransferActionGeomObject = "//trim(transferAction), ESMF_LOGMSG_INFO, rc=rc)
+              if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                line=__LINE__,  &
+                file=__FILE__)) &
+                return  ! bail out
+        select case (trim(transferAction))
+!         case ("accept")
+          case ("accept","provide")
+            call NUOPC_Realize(importState, fieldName=standardNameList(item), rc=rc)
+            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__)) &
+              return  ! bail out
+            if (btest(verbosity,8)) then
+              write(msgString,'(a,": import[",i0,"]:",2(1x,a))') trim(name), &
+                item, trim(standardNameList(item)), "(realized on accepted GeomObject)"
+              call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=rc)
+              if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                line=__LINE__,  &
+                file=__FILE__)) &
+                return  ! bail out
+            end if
+            fieldCount = fieldCount + 1
+          case ("complete")
+            if (btest(verbosity,8)) then
+              write(msgString,'(a,": import[",i0,"]:",2(1x,a))') trim(name), &
+                item, trim(standardNameList(item)), "(completed)"
+              call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=rc)
+              if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                line=__LINE__,  &
+                file=__FILE__)) &
+                return  ! bail out
+            end if
+            fieldCount = fieldCount + 1
+          case default
+            call ESMF_LogSetError(ESMF_RC_NOT_VALID, &
+              msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__, &
+              file=__FILE__, &
+              rcToReturn=rc)
+            exit
+        end select
+      end do
+      if (associated(standardNameList)) then
+        deallocate(standardNameList, stat=stat)
+        if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
+          msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
+    end if
+
+    if (fieldCount > 0) then
+      if (this % fieldCount > 0) then
+        call ESMF_LogSetError(ESMF_RC_INTNRL_INCONS, &
+          msg="Fields that can both accept and receive GeomObjects found", &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)
+        return  ! bail out
+      else
+        this % fieldCount = fieldCount
+      end if
+    end if
+
+    ! extro
+    call NUOPC_LogExtro(name, rName, verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+  end subroutine InitializeP5
+  
+  !-----------------------------------------------------------------------------
+
+  subroutine DataInitialize(gcomp, rc)
+    type(ESMF_GridComp)  :: gcomp
+    integer, intent(out) :: rc
+
+    ! local variables
+    integer                    :: comm
+    integer                    :: iofmt
+    integer                    :: verbosity
+    character(len=ESMF_MAXSTR) :: ioFormat
+    character(len=ESMF_MAXSTR) :: name, svalue
+    type(ESMF_Config)          :: config
+    type(ESMF_VM)              :: vm
+    type(SWIO_InternalState_T) :: is
+    type(SWIO_Data_T), pointer :: this
+    
+    ! local parammeters
+    character(len=*), parameter :: rName = "DataInitialize"
+    
+    ! begin
+    rc = ESMF_SUCCESS
+
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! get component's internal state
+    call ESMF_GridCompGetInternalState(gcomp, is, rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+    this => is % wrap
+
+    ! initialize I/O layer
+    if (this % fieldCount > 0) then
+      ! get component's configuration
+      call ESMF_GridCompGet(gcomp, config=config, vm=vm, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+
+      ! get I/O format
+      call ESMF_ConfigGetAttribute(config, svalue, &
+        label="output_format:", default="none", rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      ioFormat = ESMF_UtilStringLowerCase(svalue, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+
       ! convert text to COMIO I/O selector
-      select case (trim(svalue))
-        case ("hdf5", "HDF5")
+      select case (trim(ioFormat))
+        case ("hdf5")
           iofmt = COMIO_FMT_HDF5
-          is % wrap % file_suffix = "hd5"
-        case ("pnetcdf", "parallel-netcdf", "PNETCDF")
+          this % fileSuffix = "hd5"
+        case ("pnetcdf", "parallel-netcdf")
           iofmt = COMIO_FMT_PNETCDF
-          is % wrap % file_suffix = "nc"
+          this % fileSuffix = "nc"
         case default
           call ESMF_LogSetError(rcToCheck=ESMF_RC_VAL_OUTOFRANGE, &
             msg="Invalid I/O format", &
@@ -397,33 +790,51 @@ module SWIO
             rcToReturn=rc)
           return  ! bail out
       end select
+
       ! get file info
-      call ESMF_ConfigGetAttribute(is % wrap % config, is % wrap % file_prefix, &
+      call ESMF_ConfigGetAttribute(config, this % filePrefix, &
         label="output_file_prefix:", default="data", rc=rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
 
-      ! get local VM
-      ! -- get VM for current gridded component
-      call ESMF_GridCompGet(gcomp, vm=vm, rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-      ! -- get VM for current gridded component
+      ! get MPI communicator from component's VM
       call ESMF_VMGet(vm, mpiCommunicator=comm, rc=rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
   
-      is % wrap % io => COMIO_T(fmt=iofmt, comm=comm, info=MPI_INFO_NULL)
-      if (ESMF_LogFoundError(rcToCheck=is % wrap % io % err % rc, msg=ESMF_LOGERR_PASSTHRU, &
+      ! initialize COMIO
+      this % io => COMIO_T(fmt=iofmt, comm=comm)
+      if (this % io % err % check(msg="Failure initializing I/O", &
         line=__LINE__,  &
-        file=__FILE__)) &
+        file=__FILE__)) then
+        call ESMF_LogSetError(ESMF_RC_OBJ_INIT, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__, &
+          file=__FILE__)
         return  ! bail out
+      end if
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//rName//": I/O initialized (COMIO)"&
+          //" - Writing to: "//trim(this % filePrefix)//"_YYYYMMDD_hhmmss."&
+          //trim(this % fileSuffix)//" "//trim(ioFormat)//" files", &
+          ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+    else
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//rName//": I/O not initialized"&
+          //" - No fields present", ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
     end if
 
     ! -> set InitializeDataComplete Component Attribute to "true", indicating
@@ -435,7 +846,7 @@ module SWIO
       file=__FILE__)) &
       return  ! bail out
         
-  end subroutine InitializeData
+  end subroutine DataInitialize
 
   !-----------------------------------------------------------------------------
 
@@ -444,33 +855,60 @@ module SWIO
     integer, intent(out) :: rc
     
     ! local variables
-    type(ESMF_State)   :: importState
-    type(ESMF_Field)   :: field
-!---
-    logical :: isTimeValid
-    integer :: item
-    integer :: mm, dd
-    integer, dimension(3) :: mstart, mcount
-    integer(ESMF_KIND_I4) :: yy, h, m, s
-    character(ESMF_MAXSTR) :: fileName
-    character(ESMF_MAXSTR), pointer :: importFieldNames(:)
-    type(type_InternalState) :: is
-    type(ESMF_Time) :: timeStamp
-    real(ESMF_KIND_R8), pointer :: fptr(:,:,:)
+    logical                             :: isTimeValid
+    integer                             :: i, item, stat
+    integer                             :: dimCount
+    integer                             :: nameCount
+    integer                             :: rank
+    integer                             :: verbosity
+    character(len=15)                   :: timeStamp
+    character(len=ESMF_MAXSTR)          :: name
+    character(len=ESMF_MAXSTR)          :: fileName
+    character(len=ESMF_MAXSTR), pointer :: standardNameList(:)
+    type(ESMF_Array)                    :: array
+    type(ESMF_Field)                    :: field
+    type(ESMF_GeomType_Flag)            :: geomtype
+    type(ESMF_Grid)                     :: grid
+    type(ESMF_Mesh)                     :: mesh
+    type(ESMF_MeshLoc)                  :: meshloc
+    type(ESMF_State)                    :: importState
+    type(SWIO_InternalState_T)          :: is
+    type(SWIO_Data_T), pointer          :: this
 
-    real(8), dimension(:,:,:), allocatable :: buf
+    ! local parameters
+    character(len=*), parameter :: rName = "Run"
+    character(len=*), parameter :: coordLabels(3) = &
+      (/ "grid_x", "grid_y", "grid_z" /)
 
     ! begin
     rc = ESMF_SUCCESS
 
-    ! get internal state to access component's configuration
-    call ESMF_GridCompGetInternalState(gcomp, is, rc)
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
 
-    if (is % wrap % fieldCount == 0) return
+    ! get component's internal state
+    call ESMF_GridCompGetInternalState(gcomp, is, rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+    this => is % wrap
+
+    if (this % fieldCount == 0) then
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//rName//": No fields to write", &
+          ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+      return
+    end if
 
     ! query the component for its importState
     call ESMF_GridCompGet(gcomp, importState=importState, rc=rc)
@@ -479,85 +917,179 @@ module SWIO
       file=__FILE__)) &
       return  ! bail out
 
-    ! retrieve and write imported fields
-    nullify(importFieldNames)
+    ! retrieve field list
+    nullify(standardNameList)
     call NUOPC_GetStateMemberLists(importState, &
-      StandardNameList=importFieldNames, rc=rc)
+      StandardNameList=standardNameList, nestedFlag=.true., rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
 
-    if (.not.associated(importFieldNames)) return
+    nameCount = 0
+    if (associated(standardNameList)) nameCount = size(standardNameList)
 
-    do item = 1, size(importFieldNames)
-      call ESMF_StateGet(importState, trim(importFieldNames(item)), field, rc=rc)
+    fileName = ""
+
+    do item = 1, nameCount
+      call ESMF_StateGet(importState, trim(standardNameList(item)), field, rc=rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
-      print *,'SWIO: field: '//trim(importFieldNames(item)) ; flush 6
+      call ESMF_FieldGet(field, rank=rank, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
       if (item == 1) then
-        call NUOPC_GetTimestamp(field, isValid=isTimeValid, &
-          time=timeStamp, rc=rc)
+        call SWIO_FieldGetTimeStamp(field, timeStamp, isTimeValid, rc=rc)
         if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
           file=__FILE__)) &
           return  ! bail out
-        print *,'SWIO: field: '//trim(importFieldNames(item)), isTimeValid ; flush 6
-        if (.not.isTimeValid) exit
-        call ESMF_TimeGet(timeStamp, yy=yy, mm=mm, dd=dd, h=h, m=m, s=s, rc=rc)
+        if (.not.isTimeValid) then
+          if (btest(verbosity,8)) then
+            call ESMF_LogWrite(trim(name)//": "//rName//": Field: "&
+              //trim(standardNameList(item))//" - time is invalid", &
+              ESMF_LOGMSG_INFO, rc=rc)
+            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__)) &
+              return  ! bail out
+          end if
+          exit
+        end if
+
+        ! open file
+        fileName = trim(this % filePrefix) // "." // timeStamp // "." // trim(this % fileSuffix)
+        call this % io % open(fileName, "c")
+        if (this % io % err % check(msg="Failure creating file "//trim(fileName), &
+          line=__LINE__,  &
+          file=__FILE__)) then
+          call ESMF_LogSetError(ESMF_RC_FILE_CREATE, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__, &
+            file=__FILE__)
+          return  ! bail out
+        end if
+        if (btest(verbosity,8)) then
+          call ESMF_LogWrite(trim(name)//": "//rName//": Opened file "//trim(fileName), &
+            ESMF_LOGMSG_INFO, rc=rc)
+          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__)) &
+            return  ! bail out
+        end if
+
+        ! get field GeomType
+        call ESMF_FieldGet(field, geomtype=geomtype, rc=rc)
         if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
           file=__FILE__)) &
           return  ! bail out
-        write(fileName, '(a,"_",i4.4,2i2.2,"_",3i2.2,".",a)') &
-          trim(is % wrap % file_prefix), yy, mm, dd, h, m, s, trim(is % wrap % file_suffix)
+
+        if (geomtype == ESMF_GEOMTYPE_GRID) then
+          ! write grid coordinates
+          call ESMF_FieldGet(field, grid=grid, rc=rc)
+          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__)) &
+            return  ! bail out
+          call ESMF_GridGet(grid, dimCount=dimCount, rc=rc)
+          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__)) &
+            return  ! bail out
+          do i = 1, dimCount
+            call ESMF_GridGetCoord(grid, i, array=array, rc=rc)
+            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__)) &
+              return  ! bail out
+            call SWIO_ArrayWrite(array, this % io, coordLabels(i), rc=rc)
+            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__)) &
+              return  ! bail out
+            if (btest(verbosity,8)) then
+              call ESMF_LogWrite(trim(name)//": "//rName//": Written coordinate "&
+                //coordLabels(i), ESMF_LOGMSG_INFO, rc=rc)
+              if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                line=__LINE__,  &
+                file=__FILE__)) &
+                return  ! bail out
+            end if
+          end do
+        else if (geomtype == ESMF_GEOMTYPE_MESH) then
+          ! get mesh location the Field is built on
+          call ESMF_FieldGet(field, mesh=mesh, meshloc=meshloc, rc=rc)
+          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__)) &
+            return
+          call SWIO_MeshWriteCoord(mesh, this % io, meshloc=meshloc, rc=rc)
+          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__)) &
+            return  ! bail out
+          if (btest(verbosity,8)) then
+            call ESMF_LogWrite(trim(name)//": "//rName//": Written coordinates ",&
+              ESMF_LOGMSG_INFO, rc=rc)
+            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__)) &
+              return  ! bail out
+          end if
+        end if
+      end if
+
+      call ESMF_FieldGet(field, array=array, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      call SWIO_ArrayWrite(array, this % io, trim(standardNameList(item)), rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//rName//": Written "&
+          //trim(standardNameList(item)), ESMF_LOGMSG_INFO, rc=rc)
         if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__,  &
-          file=__FILE__)) &
-          return  ! bail out
-        print *,'SWIO: output file: '//trim(fileName) ; flush 6
-        call ESMF_FieldGetBounds(field, computationalLBound=mstart, computationalUBound=mcount, rc=rc)
-        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__,  &
-          file=__FILE__)) &
-          return  ! bail out
-!       mcount = mcount - mstart + 1
-        call is % wrap % io % open(fileName, "c")
-        if (ESMF_LogFoundError(rcToCheck=is % wrap % io % err % rc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__,  &
-          file=__FILE__)) &
-          return  ! bail out
-!       call is % wrap % io % domain((/ nlon, nlat, nlev /), mstart, mcount)
-        call is % wrap % io % domain((/ nlon, nlat, nlev /), mstart, mcount - mstart + 1)
-        if (ESMF_LogFoundError(rcToCheck=is % wrap % io % err % rc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
           file=__FILE__)) &
           return  ! bail out
       end if
-      nullify(fptr)
-      call ESMF_FieldGet(field, farrayPtr=fptr, rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-      allocate(buf(mstart(1):mcount(1),mstart(2):mcount(2),mstart(3):mcount(3)))
-      buf = fptr(mstart(1):mcount(1),mstart(2):mcount(2),mstart(3):mcount(3))
-      call is % wrap % io % write(trim(importFieldNames(item)), buf)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-      deallocate(buf)
     end do
-    call is % wrap % io % close()
-    if (ESMF_LogFoundError(rcToCheck=is % wrap % io % err % rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
 
-    deallocate(importFieldNames)
+    call this % io % close()
+    if (this % io % err % check(msg="Failure closing file "//trim(fileName), &
+      line=__LINE__,  &
+      file=__FILE__)) then
+      call ESMF_LogSetError(ESMF_RC_FILE_CLOSE, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__, &
+        file=__FILE__)
+      return  ! bail out
+    end if
+    if (btest(verbosity,8)) then
+      call ESMF_LogWrite(trim(name)//": "//rName//": Closed file "//trim(fileName), &
+        ESMF_LOGMSG_INFO, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+    end if
+
+    if (associated(standardNameList)) then
+      deallocate(standardNameList, stat=stat)
+      if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
+        msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+    end if
 
   end subroutine ModelAdvance
  
@@ -568,110 +1100,105 @@ module SWIO
     type(ESMF_GridComp)  :: gcomp
     integer, intent(out) :: rc
 
-    ! -- local variables
-    integer                  :: stat
-    type(type_InternalState) :: is
-    
+    ! local variables
+    logical                    :: configIsPresent
+    integer                    :: stat
+    integer                    :: verbosity
+    character(len=ESMF_MAXSTR) :: name
+    type(ESMF_Config)          :: config
+    type(SWIO_InternalState_T) :: is
 
+    ! local parameters
+    character(len=*), parameter :: rName = "Finalize"
+    ! begin
     rc = ESMF_SUCCESS
 
-    ! -- get internal state
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! check if Config is present
+    call ESMF_GridCompGet(gcomp, configIsPresent=configIsPresent, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    if (configIsPresent) then
+      ! get component's Config object
+      call ESMF_GridCompGet(gcomp, config=config, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      ! destroy config
+      call ESMF_ConfigDestroy(config, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//rName//": Config successfully destroyed",&
+          ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+    end if
+
+    ! get internal state
     call ESMF_GridCompGetInternalState(gcomp, is, rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
 
-    ! -- destroy config
-    call ESMF_ConfigDestroy(is % wrap % config, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-
-    ! -- shotdown I/O layer
-    call is % wrap % io % shutdown()
-    if (ESMF_LogFoundError(rcToCheck=is % wrap % io % err % rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-
-    ! -- finally, deallocate internal state
-    deallocate(is % wrap, stat=stat)
-    if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
-      msg="Allocation of internal state memory failed.", &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
+    if (associated(is % wrap)) then
+      if (associated(is % wrap % io)) then
+        ! shutdown I/O layer
+        call is % wrap % io % shutdown()
+        if (ESMF_LogFoundError(rcToCheck=is % wrap % io % err % rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+        ! finally, deallocate internal state
+        deallocate(is % wrap % io, stat=stat)
+        if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
+          msg="Failed to free memory used by I/O layer.", &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+        end if
+        if (btest(verbosity,8)) then
+          call ESMF_LogWrite(trim(name)//": "//rName//": I/O successfully shutdown",&
+            ESMF_LOGMSG_INFO, rc=rc)
+          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__)) &
+            return  ! bail out
+        end if
+      ! finally, deallocate internal state
+      deallocate(is % wrap, stat=stat)
+      if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
+        msg="Failed to free internal state memory.", &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      nullify(is % wrap)
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//rName//": Internal state memory successfully released",&
+          ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+    end if
 
   end subroutine Finalize
-
-  !------------------------------------------------------
-
-  subroutine IOGridCreateReg(grid, nlon, nlat, nlev, rc)
-
-    type(ESMF_Grid) :: grid
-    integer, intent(in) :: nlon, nlat, nlev
-    integer, optional, intent(out) :: rc
-
-    ! -- local variables
-    integer :: i, n, localrc
-    integer, dimension(1) :: lbnd, ubnd
-    real(ESMF_KIND_R8), dimension(:), pointer :: coordPtr
-    real(ESMF_KIND_R8), dimension(3) :: coordbase, coordIncr
-
-
-    if (present(rc)) rc = ESMF_SUCCESS
-
-    coordBase = (/ 0._ESMF_KIND_R8, -90._ESMF_KIND_R8, 90._ESMF_KIND_R8 /)
-    coordIncr = (/ 360._ESMF_KIND_R8/(nlon-1), 180._ESMF_KIND_R8/(nlat-1), &
-                   800._ESMF_KIND_R8/(nlev-1) /)
-
-    ! -- create 2D grid
-    grid = ESMF_GridCreate1PeriDim( &
-             maxIndex = (/ nlon, nlat, nlev /), &
-             coordSys  = ESMF_COORDSYS_SPH_DEG, &
-             coordDep1 = (/ 1 /), &
-             coordDep2 = (/ 2 /), &
-             coordDep3 = (/ 3 /), &
-             indexflag = ESMF_INDEX_GLOBAL, &
-             rc = localrc)
-    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return
-
-    ! -- add coordinates
-    call ESMF_GridAddCoord(grid, &
-           staggerloc = ESMF_STAGGERLOC_CENTER, rc = localrc)
-    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return
-
-    do n = 1, size(coordIncr)
-      nullify(coordPtr)
-      call ESMF_GridGetCoord(grid, coordDim = n, localDE = 0, &
-             staggerloc = ESMF_STAGGERLOC_CENTER, &
-             computationalLBound = lbnd, computationalUBound = ubnd, &
-             farrayPtr = coordPtr, rc = localrc)
-      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__)) &
-        return
-      do i = lbnd(1), ubnd(1)
-        coordPtr(i) = (i-1)*coordIncr(n) + coordBase(n)
-      end do
-      if (n == 3) then
-        do i = lbnd(1), ubnd(1)
-!         coordPtr(i) = 1._ESMF_KIND_R8 + coordPtr(i)/6371.2_ESMF_KIND_R8
-          coordPtr(i) = 1000._ESMF_KIND_R8 * coordPtr(i)
-        end do
-      end if
-    end do
-
-    nullify(coordPtr)
-
-  end subroutine IOGridCreateReg
 
 end module SWIO
