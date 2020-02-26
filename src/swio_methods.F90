@@ -295,7 +295,7 @@ contains
     integer,            optional, intent(out) :: rc
 
     ! local variables
-    logical                                         :: isPresent
+    logical                                         :: isMemFreed, isPresent
     integer                                         :: localrc, stat
     integer                                         :: item
     integer                                         :: de, deCount, dimCount, tileCount
@@ -318,6 +318,17 @@ contains
     ! begin
     if (present(rc)) rc = ESMF_SUCCESS
 
+    ! check if coordinate and connection information is present
+    call ESMF_MeshGet(mesh, isMemFreed=isMemFreed, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) return  ! bail out
+
+    ! return if not present
+    if (isMemFreed) return
+
+    ! set mesh location
     lmeshloc = ESMF_MESHLOC_NODE
     if (present(meshloc)) lmeshloc = meshloc
 
