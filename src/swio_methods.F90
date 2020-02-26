@@ -159,6 +159,9 @@ contains
       rcToReturn=rc)) return  ! bail out
 
     ! fill undistributed dimensions first
+    globalElemCount = 0
+    localElemCount  = 0
+    localElemStart  = 0
     if (rank > dimCount) then
       lsize = rank - dimCount
       allocate(undistLBound(lsize), undistUBound(lsize), stat=stat)
@@ -172,9 +175,9 @@ contains
         file=__FILE__,  &
         rcToReturn=rc)) return  ! bail out
 
-      globalElemCount     (dimCount+1:rank) = undistUBound - undistLBound + 1
-      localElemStart  (dimCount+1:rank) = undistLBound
-      localElemCount(dimCount+1:rank) = globalElemCount(dimCount+1:rank)
+      globalElemCount(dimCount+1:rank) = undistUBound - undistLBound + 1
+      localElemStart (dimCount+1:rank) = undistLBound
+      localElemCount (dimCount+1:rank) = globalElemCount(dimCount+1:rank)
    
       deallocate(undistLBound, undistUBound, stat=stat)
       if (ESMF_LogFoundDeallocError(statusToCheck=stat, msg="Unable to free memory", &
@@ -196,15 +199,12 @@ contains
 
       if (tileId == deToTileMap(de)) then
 
-        globalElemCount      = 0
-        localElemCount = 0
-        localElemStart   = 0
         do item = 1, dimCount
           i = distgridToArrayMap(item)
           if (i /= 0) then
-            globalElemCount     (i) = maxIndexPTile(item,tileId) - minIndexPTile(item,tileId) + 1
-            localElemStart  (i) = minIndexPDe(item,de)
-            localElemCount(i) = maxIndexPDe(item,de) - minIndexPDe(item,de) + 1
+            globalElemCount(i) = maxIndexPTile(item,tileId) - minIndexPTile(item,tileId) + 1
+            localElemStart (i) = minIndexPDe(item,de)
+            localElemCount (i) = maxIndexPDe(item,de) - minIndexPDe(item,de) + 1
           end if
         end do
    
