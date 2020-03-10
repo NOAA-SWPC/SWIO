@@ -392,11 +392,12 @@ module SWIO
     integer, intent(out) :: rc
 
     ! local variables
-    logical                         :: createGrid
-    integer                         :: item
+    logical                         :: createGrid, isPresent
+    integer                         :: item, itemCount
     integer                         :: stat
     integer                         :: verbosity
     integer                         :: fieldCount, nameCount
+    integer                         :: ungriddedDimLength
     character(ESMF_MAXSTR)          :: name
     character(ESMF_MAXSTR)          :: msgString
     character(ESMF_MAXSTR)          :: transferAction
@@ -459,6 +460,7 @@ module SWIO
     end if
 
     fieldCount = 0
+    ungriddedDimLength = 0
     createGrid = .true.
     do item = 1, nameCount
       if (trim(connectedList(item)) == "true") then
@@ -474,12 +476,14 @@ module SWIO
           line=__LINE__, &
           file=__FILE__)) &
           return  ! bail out
-              call ESMF_LogWrite(trim(name)//": "//rName &
-                //": TransferActionGeomObject = "//trim(transferAction), ESMF_LOGMSG_INFO, rc=rc)
-              if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-                line=__LINE__,  &
-                file=__FILE__)) &
-                return  ! bail out
+        if (btest(verbosity,8)) then
+          call ESMF_LogWrite(trim(name)//": "//rName &
+            //": TransferActionGeomObject = "//trim(transferAction), ESMF_LOGMSG_INFO, rc=rc)
+          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__)) &
+            return  ! bail out
+        end if
         if (trim(transferAction) == "provide") then
           select case (this % gridType)
             case ("none")
@@ -496,14 +500,41 @@ module SWIO
                   line=__LINE__,  &
                   file=__FILE__)) &
                   return  ! bail out
+                call ESMF_AttributeGet(grid, name="UngriddedDimLength", &
+                  convention="NUOPC", purpose="Instance", isPresent=isPresent, &
+                  rc=rc)
+                if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                  line=__LINE__,  &
+                  file=__FILE__)) &
+                  return  ! bail out
+                if (isPresent) then
+                  call ESMF_AttributeGet(grid, name="UngriddedDimLength", &
+                    value=ungriddedDimLength, convention="NUOPC", &
+                    purpose="Instance", rc=rc)
+                  if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                    line=__LINE__,  &
+                    file=__FILE__)) &
+                    return  ! bail out
+                end if
                 createGrid = .false.
               end if
-              field = ESMF_FieldCreate(grid, ESMF_TYPEKIND_R8, &
-                name=trim(standardNameList(item)), rc=rc)
-              if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-                line=__LINE__,  &
-                file=__FILE__)) &
-                return  ! bail out
+              if (ungriddedDimLength > 0) then
+                field = ESMF_FieldCreate(grid, ESMF_TYPEKIND_R8, &
+                  ungriddedLBound=(/ 1 /), &
+                  ungriddedUBound=(/ ungriddedDimLength /), &
+                  name=trim(standardNameList(item)), rc=rc)
+                if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                  line=__LINE__,  &
+                  file=__FILE__)) &
+                  return  ! bail out
+              else
+                field = ESMF_FieldCreate(grid, ESMF_TYPEKIND_R8, &
+                  name=trim(standardNameList(item)), rc=rc)
+                if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                  line=__LINE__,  &
+                  file=__FILE__)) &
+                  return  ! bail out
+              end if
             case default
               exit
           end select
@@ -877,8 +908,6 @@ module SWIO
 
     ! local parameters
     character(len=*), parameter :: rName = "Run"
-    character(len=*), parameter :: coordLabels(3) = &
-      (/ "grid_x", "grid_y", "grid_z" /)
 
     ! begin
     rc = ESMF_SUCCESS
@@ -981,66 +1010,14 @@ module SWIO
             return  ! bail out
         end if
 
-        ! get field GeomType
-        call ESMF_FieldGet(field, geomtype=geomtype, rc=rc)
+        ! write Field coordinates and ungridded dimensions
+        call SWIO_FieldWriteCoord(field, this % io, &
+          logLabel=trim(name)//": "//rName, verbosity=verbosity, rc=rc)
         if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
           file=__FILE__)) &
           return  ! bail out
 
-        if (geomtype == ESMF_GEOMTYPE_GRID) then
-          ! write grid coordinates
-          call ESMF_FieldGet(field, grid=grid, rc=rc)
-          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__,  &
-            file=__FILE__)) &
-            return  ! bail out
-          call ESMF_GridGet(grid, dimCount=dimCount, rc=rc)
-          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__,  &
-            file=__FILE__)) &
-            return  ! bail out
-          do i = 1, dimCount
-            call ESMF_GridGetCoord(grid, i, array=array, rc=rc)
-            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-              line=__LINE__,  &
-              file=__FILE__)) &
-              return  ! bail out
-            call SWIO_ArrayWrite(array, this % io, coordLabels(i), rc=rc)
-            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-              line=__LINE__,  &
-              file=__FILE__)) &
-              return  ! bail out
-            if (btest(verbosity,8)) then
-              call ESMF_LogWrite(trim(name)//": "//rName//": Written coordinate "&
-                //coordLabels(i), ESMF_LOGMSG_INFO, rc=rc)
-              if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-                line=__LINE__,  &
-                file=__FILE__)) &
-                return  ! bail out
-            end if
-          end do
-        else if (geomtype == ESMF_GEOMTYPE_MESH) then
-          ! get mesh location the Field is built on
-          call ESMF_FieldGet(field, mesh=mesh, meshloc=meshloc, rc=rc)
-          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__,  &
-            file=__FILE__)) &
-            return
-          call SWIO_MeshWriteCoord(mesh, this % io, meshloc=meshloc, rc=rc)
-          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__,  &
-            file=__FILE__)) &
-            return  ! bail out
-          if (btest(verbosity,8)) then
-            call ESMF_LogWrite(trim(name)//": "//rName//": Written coordinates ",&
-              ESMF_LOGMSG_INFO, rc=rc)
-            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-              line=__LINE__,  &
-              file=__FILE__)) &
-              return  ! bail out
-          end if
-        end if
       end if
 
       call ESMF_FieldGet(field, array=array, rc=rc)

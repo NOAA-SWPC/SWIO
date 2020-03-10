@@ -12,6 +12,7 @@ module swio_methods
 
   public :: SWIO_ArrayWrite
   public :: SWIO_FieldGetTimeStamp
+  public :: SWIO_FieldWriteCoord
   public :: SWIO_GridCreateLatLon
   public :: SWIO_MeshWriteCoord
 
@@ -22,6 +23,10 @@ module swio_methods
 
   interface SWIO_FieldGetTimeStamp
     module procedure FieldGetTimeStamp
+  end interface
+
+  interface SWIO_FieldWriteCoord
+    module procedure FieldWriteCoord
   end interface
 
   interface SWIO_GridCreateLatLon
@@ -477,6 +482,160 @@ contains
 
   end subroutine MeshWriteCoord
 
+  subroutine FieldWriteCoord(field, io, logLabel, verbosity, rc)
+    type(ESMF_Field)                        :: field
+    class(COMIO_T)                          :: io
+    character(len=*), optional, intent(in)  :: loglabel
+    integer,          optional, intent(in)  :: verbosity
+    integer,          optional, intent(out) :: rc
+
+    ! local variables
+    integer                    :: localrc, stat
+    integer                    :: dimCount, rank
+    integer                    :: item, n
+    integer                    :: lverbosity
+    integer                    :: dimLength(1)
+    integer, allocatable       :: ungriddedLBound(:), ungriddedUBound(:)
+    character(len=ESMF_MAXSTR) :: llabel
+    character(len=ESMF_MAXSTR) :: msgString
+    type(ESMF_Array)           :: array
+    type(ESMF_GeomType_Flag)   :: geomtype
+    type(ESMF_Grid)            :: grid
+    type(ESMF_Mesh)            :: mesh
+    type(ESMF_MeshLoc)         :: meshloc
+
+    ! local parameters
+    character(len=*), parameter :: coordLabels(3) = &
+      (/ "grid_x", "grid_y", "grid_z" /)
+
+    ! begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    ! set defaults
+    llabel = "FieldWriteCoord"
+    if (present(logLabel)) llabel = logLabel
+
+    lverbosity = 0
+    if (present(verbosity)) lverbosity = verbosity
+
+    ! get field GeomType
+    call ESMF_FieldGet(field, geomtype=geomtype, rank=rank, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    if (geomtype == ESMF_GEOMTYPE_GRID) then
+      ! write grid coordinates
+      call ESMF_FieldGet(field, grid=grid, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_GridGet(grid, dimCount=dimCount, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      do item = 1, dimCount
+        call ESMF_GridGetCoord(grid, item, array=array, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        call SWIO_ArrayWrite(array, io, coordLabels(item), rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        if (btest(lverbosity,8)) then
+          call ESMF_LogWrite(trim(llabel)//": Written coordinate "&
+            //coordLabels(item), ESMF_LOGMSG_INFO, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+        end if
+      end do
+    else if (geomtype == ESMF_GEOMTYPE_MESH) then
+      ! get mesh location the Field is built on
+      call ESMF_FieldGet(field, mesh=mesh, meshloc=meshloc, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return
+      ! set dimCount to 1 for Mesh objects
+      dimCount = 1
+      call SWIO_MeshWriteCoord(mesh, io, meshloc=meshloc, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      if (btest(lverbosity,8)) then
+        call ESMF_LogWrite(trim(llabel)//": Written coordinates ",&
+          ESMF_LOGMSG_INFO, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
+    end if
+
+    if (rank > dimCount) then
+      n = rank - dimCount
+      allocate(ungriddedLBound(n), ungriddedUBound(n), stat=stat)
+      if (ESMF_LogFoundAllocError(statusToCheck=stat, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_FieldGet(field, ungriddedLBound=ungriddedLBound, &
+        ungriddedUBound=ungriddedUBound, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      do item = 1, n
+        dimLength(1) = ungriddedUBound(item) - ungriddedLBound(item) + 1
+        call io % domain(dimLength, (/ 1 /), dimLength)
+        if (io % err % check(msg="Failure setting dataset ungridded domain", &
+          line=__LINE__,  &
+          file=__FILE__)) then
+          call ESMF_LogSetError(ESMF_RC_FILE_UNEXPECTED, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__, &
+            file=__FILE__, &
+            rcToReturn=rc)
+          return  ! bail out
+        end if
+        if (btest(lverbosity,8)) then
+          write(msgString,'(a,1x,i0)') trim(llabel)//": Written ungridded dimension", item
+          call ESMF_LogWrite(msgString, ESMF_LOGMSG_INFO, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+        end if
+      end do
+      deallocate(ungriddedLBound, ungriddedUBound, stat=stat)
+      if (ESMF_LogFoundDeallocError(statusToCheck=stat, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+    end if
+
+  end subroutine FieldWriteCoord
+
   subroutine FieldGetTimeStamp(field, timeStamp, isTimeValid, rc)
     type(ESMF_Field)               :: field
     character(len=15), intent(out) :: timeStamp
@@ -523,6 +682,7 @@ contains
     logical                         :: isLevelRelative
     integer                         :: localrc, stat
     integer                         :: dimCount, columnCount
+    integer                         :: ungriddedDimLength
     integer                         :: item
     integer                         :: verbosity
     integer                         :: lbnd(1), ubnd(1)
@@ -586,6 +746,7 @@ contains
 
     ! get dimension lengths
     dimLengths = 0
+    ungriddedDimLength = 0
     call ESMF_ConfigGetAttribute(config, dimLengths, &
       label="output_grid_size:", rc=localrc)
     if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
@@ -603,7 +764,7 @@ contains
           file=__FILE__,  &
           rcToReturn=rc)) &
           return  ! bail out
-      else
+      else if (dimLengths(3) == 0) then
         ! get number of vertical levels provided in configuration file
         call ESMF_ConfigGetDim(config, dimLengths(3), columnCount, &
           label="output_grid_level_values::", rc=localrc)
@@ -650,6 +811,10 @@ contains
           deallocate(levelValues, dimLengths, stat=stat)
           return
         end if
+      else
+        ! 3rd dimension is ungridded
+        dimCount = 2
+        ungriddedDimLength = -dimLengths(3)
       end if
       ! check if vertical levels should be normalized
       call ESMF_ConfigGetAttribute(config, isLevelRelative, &
@@ -665,7 +830,7 @@ contains
     select case (dimCount)
       case (2)
         grid = ESMF_GridCreate1PeriDim( &
-                 maxIndex  = dimLengths,&
+                 maxIndex  = dimLengths(1:dimCount),&
                  coordSys  = ESMF_COORDSYS_SPH_DEG, &
                  coordDep1 = (/ 1 /), &
                  coordDep2 = (/ 2 /), &
@@ -738,6 +903,26 @@ contains
           return  ! bail out
       end if
     end do
+
+    ! add ungridded dimension if needed
+    if (ungriddedDimLength > 0) then
+      ! record ungridded dimension size as ESMF Attribute
+      call ESMF_AttributeAdd(grid, convention="NUOPC", purpose="Instance", &
+        attrList=(/ "UngriddedDimLength" /), rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      call ESMF_AttributeSet(grid, name="UngriddedDimLength", &
+        value=ungriddedDimLength, convention="NUOPC", purpose="Instance", rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+    end if
 
     if (btest(verbosity,8)) then
       write(msgString,'(a,": ",a,": lat/lon ",i0,"D grid created - resolution:",3(1x,i0))') &
