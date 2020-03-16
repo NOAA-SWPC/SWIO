@@ -668,12 +668,14 @@ module SWIO
           line=__LINE__, &
           file=__FILE__)) &
           return  ! bail out
-              call ESMF_LogWrite(trim(name)//": "//rName &
-                //": TransferActionGeomObject = "//trim(transferAction), ESMF_LOGMSG_INFO, rc=rc)
-              if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-                line=__LINE__,  &
-                file=__FILE__)) &
-                return  ! bail out
+        if (btest(verbosity,8)) then
+          call ESMF_LogWrite(trim(name)//": "//rName &
+            //": TransferActionGeomObject = "//trim(transferAction), ESMF_LOGMSG_INFO, rc=rc)
+          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__)) &
+            return  ! bail out
+        end if
         select case (trim(transferAction))
 !         case ("accept")
           case ("accept","provide")
