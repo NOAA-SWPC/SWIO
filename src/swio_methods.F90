@@ -302,20 +302,19 @@ contains
     ! local variables
     logical                                         :: isMemFreed, isPresent
     integer                                         :: localrc, stat
-    integer                                         :: item
-    integer                                         :: de, deCount, dimCount, tileCount
+    integer                                         :: item, is, ie
+    integer                                         :: de, deCount, localDe, localDeCount
+    integer                                         :: dimCount, tileCount
     integer                                         :: numOwnedElements, numOwnedNodes
     integer                                         :: spatialDim
     integer,            dimension(1)                :: globalElemCount
     integer,            dimension(1)                :: localElemCount, localElemStart
+    integer,            dimension(:),   allocatable :: localDeToDeMap
     integer,            dimension(:,:), allocatable :: minIndexPDe,   maxIndexPDe
     integer,            dimension(:,:), allocatable :: minIndexPTile, maxIndexPTile
     real(ESMF_KIND_R8), dimension(:),   allocatable :: ownedCoords
     type(ESMF_DistGrid)                             :: distgrid
     type(ESMF_MeshLoc)                              :: lmeshloc
-    
-    integer :: localDeCount
-    integer, dimension(:), allocatable :: localDeToDeMap
 
     character(len=*), parameter :: coordLabels(3) = &
       (/ "mesh_x", "mesh_y", "mesh_z" /)
@@ -408,9 +407,9 @@ contains
       file=__FILE__,  &
       rcToReturn=rc)) return  ! bail out
 
-    if (localDeCount /= 1) then
+    if (dimCount /= 1) then
       call ESMF_LogSetError(rcToCheck=ESMF_RC_OBJ_BAD, &
-        msg="Expected localDeCount = 1 for Mesh objects", &
+        msg="Expected dimCount = 1 for Mesh objects", &
         line=__LINE__,  &
         file=__FILE__,  &
         rcToReturn=rc)
@@ -444,33 +443,43 @@ contains
       rcToReturn=rc)) return  ! bail out
 
     ! now work on distributed dimensions
-    de = localDeToDeMap(1) + 1
-    globalElemCount(1) = maxIndexPTile(1,1) - minIndexPTile(1,1) + 1
-    localElemStart (1) = minIndexPDe(1,de)
-    localElemCount (1) = maxIndexPDe(1,de) - minIndexPDe(1,de) + 1
-    
-    ! set dataset global and local domain
-    call io % domain(globalElemCount, localElemStart, localElemCount)
-    if (io % err % check(msg="Failure setting dataset domain", &
-      line=__LINE__,  &
-      file=__FILE__)) then
-      call ESMF_LogSetError(ESMF_RC_FILE_UNEXPECTED, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__)
-      return  ! bail out
-    end if
-    
-    ! write dataset
-    do item = 1, spatialDim
-      call io % write(coordLabels(item), ownedCoords(item::spatialDim))
-      if (io % err % check(msg="Failure writing dataset: "//coordLabels(item), &
+    globalElemCount = 0
+    localElemStart  = 0
+    localElemCount  = 0
+
+    is = 0
+    do localDe = 0, localDeCount - 1
+
+      de = localDeToDeMap(localDe + 1) + 1
+      globalElemCount(1) = maxIndexPTile(1,1) - minIndexPTile(1,1) + 1
+      localElemStart (1) = minIndexPDe(1,de)
+      localElemCount (1) = maxIndexPDe(1,de) - minIndexPDe(1,de) + 1
+
+      ! set dataset global and local domain
+      call io % domain(globalElemCount, localElemStart, localElemCount)
+      if (io % err % check(msg="Failure setting dataset domain", &
         line=__LINE__,  &
         file=__FILE__)) then
-        call ESMF_LogSetError(ESMF_RC_FILE_WRITE, msg=ESMF_LOGERR_PASSTHRU, &
+        call ESMF_LogSetError(ESMF_RC_FILE_UNEXPECTED, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__, &
           file=__FILE__)
         return  ! bail out
       end if
+
+      ! write dataset
+      ie = is + spatialDim * localElemCount(1)
+      do item = 1, spatialDim
+        call io % write(coordLabels(item), ownedCoords(is+item:ie:spatialDim))
+        if (io % err % check(msg="Failure writing dataset: "//coordLabels(item), &
+          line=__LINE__,  &
+          file=__FILE__)) then
+          call ESMF_LogSetError(ESMF_RC_FILE_WRITE, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__, &
+            file=__FILE__)
+          return  ! bail out
+        end if
+      end do
+      is = ie
     end do
 
     deallocate(minIndexPDe, maxIndexPDe, minIndexPTile, maxIndexPTile, &
