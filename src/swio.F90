@@ -321,7 +321,6 @@ module SWIO
     ! - read field standard name from 1st column and advertise field
     item = 0
     do
-      item = item + 1
       ! get next row
       call ESMF_ConfigNextLine(config, tableEnd=listEnd, rc=rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
@@ -343,6 +342,7 @@ module SWIO
         line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
+      item = item + 1
       if (btest(verbosity,8)) then
         write(msgString,'(a,": import[",i0,"]: ",a)') trim(name), &
           item, trim(fieldStandardName)
