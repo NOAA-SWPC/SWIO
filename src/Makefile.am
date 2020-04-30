@@ -12,3 +12,4 @@ clean-local: clean-modules
 
 # dependencies
 libswio_a-swio.$(OBJEXT) : libswio_a-swio_data.$(OBJEXT) libswio_a-swio_methods.$(OBJEXT)
+libswio_a-swio_methods.$(OBJEXT) : libswio_a-swio_data.$(OBJEXT)

@@ -611,6 +611,7 @@ clean-local: clean-modules
 
 # dependencies
 libswio_a-swio.$(OBJEXT) : libswio_a-swio_data.$(OBJEXT) libswio_a-swio_methods.$(OBJEXT)
+libswio_a-swio_methods.$(OBJEXT) : libswio_a-swio_data.$(OBJEXT)
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

@@ -914,161 +914,12 @@ module SWIO
     ! begin
     rc = ESMF_SUCCESS
 
-    ! get component's info
-    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=rc)
+    ! write output
+    call SWIO_Output(gcomp, phaseName=rName, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
-
-    ! get component's internal state
-    call ESMF_GridCompGetInternalState(gcomp, is, rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-    this => is % wrap
-
-    if (this % fieldCount == 0) then
-      if (btest(verbosity,8)) then
-        call ESMF_LogWrite(trim(name)//": "//rName//": No fields to write", &
-          ESMF_LOGMSG_INFO, rc=rc)
-        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__,  &
-          file=__FILE__)) &
-          return  ! bail out
-      end if
-      return
-    end if
-
-    ! query the component for its importState
-    call ESMF_GridCompGet(gcomp, importState=importState, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-
-    ! retrieve field list
-    nullify(standardNameList)
-    call NUOPC_GetStateMemberLists(importState, &
-      StandardNameList=standardNameList, nestedFlag=.true., rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__)) &
-      return  ! bail out
-
-    nameCount = 0
-    if (associated(standardNameList)) nameCount = size(standardNameList)
-
-    fileName = ""
-
-    do item = 1, nameCount
-      call ESMF_StateGet(importState, trim(standardNameList(item)), field, rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-      call ESMF_FieldGet(field, rank=rank, rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-      if (item == 1) then
-        call SWIO_FieldGetTimeStamp(field, timeStamp, isTimeValid, rc=rc)
-        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__,  &
-          file=__FILE__)) &
-          return  ! bail out
-        if (.not.isTimeValid) then
-          if (btest(verbosity,8)) then
-            call ESMF_LogWrite(trim(name)//": "//rName//": Field: "&
-              //trim(standardNameList(item))//" - time is invalid", &
-              ESMF_LOGMSG_INFO, rc=rc)
-            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-              line=__LINE__,  &
-              file=__FILE__)) &
-              return  ! bail out
-          end if
-          exit
-        end if
-
-        ! open file
-        fileName = trim(this % filePrefix) // "." // timeStamp // "." // trim(this % fileSuffix)
-        call this % io % open(fileName, "c")
-        if (this % io % err % check(msg="Failure creating file "//trim(fileName), &
-          line=__LINE__,  &
-          file=__FILE__)) then
-          call ESMF_LogSetError(ESMF_RC_FILE_CREATE, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__, &
-            file=__FILE__)
-          return  ! bail out
-        end if
-        if (btest(verbosity,8)) then
-          call ESMF_LogWrite(trim(name)//": "//rName//": Opened file "//trim(fileName), &
-            ESMF_LOGMSG_INFO, rc=rc)
-          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__,  &
-            file=__FILE__)) &
-            return  ! bail out
-        end if
-
-        ! write Field coordinates and ungridded dimensions
-        call SWIO_FieldWriteCoord(field, this % io, &
-          logLabel=trim(name)//": "//rName, verbosity=verbosity, rc=rc)
-        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__,  &
-          file=__FILE__)) &
-          return  ! bail out
-
-      end if
-
-      call ESMF_FieldGet(field, array=array, rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-      call SWIO_ArrayWrite(array, this % io, trim(standardNameList(item)), rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-      if (btest(verbosity,8)) then
-        call ESMF_LogWrite(trim(name)//": "//rName//": Written "&
-          //trim(standardNameList(item)), ESMF_LOGMSG_INFO, rc=rc)
-        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__,  &
-          file=__FILE__)) &
-          return  ! bail out
-      end if
-    end do
-
-    call this % io % close()
-    if (this % io % err % check(msg="Failure closing file "//trim(fileName), &
-      line=__LINE__,  &
-      file=__FILE__)) then
-      call ESMF_LogSetError(ESMF_RC_FILE_CLOSE, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__)
-      return  ! bail out
-    end if
-    if (btest(verbosity,8)) then
-      call ESMF_LogWrite(trim(name)//": "//rName//": Closed file "//trim(fileName), &
-        ESMF_LOGMSG_INFO, rc=rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__)) &
-        return  ! bail out
-    end if
-
-    if (associated(standardNameList)) then
-      deallocate(standardNameList, stat=stat)
-      if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
-        msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__,  &
-        rcToReturn=rc)) &
-        return  ! bail out
-    end if
 
   end subroutine ModelAdvance
  
@@ -1094,6 +945,13 @@ module SWIO
 
     ! get component's info
     call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! write output at the final time step
+    call SWIO_Output(gcomp, phaseName=rName, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
