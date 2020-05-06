@@ -887,27 +887,6 @@ module SWIO
     type(ESMF_GridComp)  :: gcomp
     integer, intent(out) :: rc
     
-    ! local variables
-    logical                             :: isTimeValid
-    integer                             :: i, item, stat
-    integer                             :: dimCount
-    integer                             :: nameCount
-    integer                             :: rank
-    integer                             :: verbosity
-    character(len=15)                   :: timeStamp
-    character(len=ESMF_MAXSTR)          :: name
-    character(len=ESMF_MAXSTR)          :: fileName
-    character(len=ESMF_MAXSTR), pointer :: standardNameList(:)
-    type(ESMF_Array)                    :: array
-    type(ESMF_Field)                    :: field
-    type(ESMF_GeomType_Flag)            :: geomtype
-    type(ESMF_Grid)                     :: grid
-    type(ESMF_Mesh)                     :: mesh
-    type(ESMF_MeshLoc)                  :: meshloc
-    type(ESMF_State)                    :: importState
-    type(SWIO_InternalState_T)          :: is
-    type(SWIO_Data_T), pointer          :: this
-
     ! local parameters
     character(len=*), parameter :: rName = "Run"
 
