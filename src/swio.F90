@@ -859,6 +859,73 @@ module SWIO
           file=__FILE__)) &
           return  ! bail out
       end if
+
+      ! get output datatype if provided (default to native)
+      call ESMF_ConfigGetAttribute(config, svalue, &
+        label="output_datatype:", default="native", rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      ioFormat = ESMF_UtilStringLowerCase(svalue, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+
+      select case (trim(ioFormat))
+        case ("integer")
+          call this % io % writeas(1)
+          if (this % io % err % check(&
+            msg="Failure setting output datatype to "//trim(ioFormat), &
+            line=__LINE__,  &
+            file=__FILE__)) then
+            call ESMF_LogSetError(ESMF_RC_OBJ_INIT, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__, &
+               file=__FILE__)
+            return  ! bail out
+          end if
+        case ("float")
+          call this % io % writeas(1.)
+          if (this % io % err % check(&
+            msg="Failure setting output datatype to "//trim(ioFormat), &
+            line=__LINE__,  &
+            file=__FILE__)) then
+            call ESMF_LogSetError(ESMF_RC_OBJ_INIT, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__, &
+               file=__FILE__)
+            return  ! bail out
+          end if
+        case ("double")
+          call this % io % writeas(1.d0)
+          if (this % io % err % check(&
+            msg="Failure setting output datatype to "//trim(ioFormat), &
+            line=__LINE__,  &
+            file=__FILE__)) then
+            call ESMF_LogSetError(ESMF_RC_OBJ_INIT, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__, &
+               file=__FILE__)
+            return  ! bail out
+          end if
+        case ("native")
+          ! do nothing
+        case default
+          call ESMF_LogSetError(ESMF_RC_NOT_VALID, &
+            msg="Unsupported datatype: "//trim(ioFormat), &
+            line=__LINE__, &
+            file=__FILE__)
+          return  ! bail out
+      end select
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//rName &
+          //": Output datatype set to: "//trim(ioFormat), &
+          ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+
     else
       if (btest(verbosity,8)) then
         call ESMF_LogWrite(trim(name)//": "//rName//": I/O not initialized"&
