@@ -8,6 +8,7 @@ module swio_data
   type SWIO_Data_T
     integer                 :: logLevel
     integer                 :: fieldCount
+    logical                 :: geoReference
     character(ESMF_MAXSTR)  :: gridType
     character(ESMF_MAXSTR)  :: filePrefix
     character(ESMF_MAXSTR)  :: fileSuffix

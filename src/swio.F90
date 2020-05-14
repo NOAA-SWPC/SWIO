@@ -265,10 +265,11 @@ module SWIO
       return  ! bail out
     this => is % wrap
     ! initialize internal state
-    this % fieldCount = 0
-    this % gridType   = ""
-    this % filePrefix = ""
-    this % fileSuffix = ""
+    this % fieldCount   = 0
+    this % geoReference = .false.
+    this % gridType     = ""
+    this % filePrefix   = ""
+    this % fileSuffix   = ""
     nullify(this % io)
 
     ! get output grid selection
@@ -283,6 +284,7 @@ module SWIO
     select case (trim(this % gridType))
       case ("none")
       case ("latlon")
+        this % geoReference = .true.
       case default
         call ESMF_LogSetError(ESMF_RC_NOT_IMPL, &
           msg=" -  grid type: "//trim(this % gridType), &

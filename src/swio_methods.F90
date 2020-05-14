@@ -569,9 +569,10 @@ contains
 
   end subroutine MeshWriteCoord
 
-  subroutine FieldWriteCoord(field, io, logLabel, verbosity, rc)
+  subroutine FieldWriteCoord(field, io, georeference, logLabel, verbosity, rc)
     type(ESMF_Field)                        :: field
     class(COMIO_T)                          :: io
+    logical,          optional, intent(in)  :: georeference
     character(len=*), optional, intent(in)  :: loglabel
     integer,          optional, intent(in)  :: verbosity
     integer,          optional, intent(out) :: rc
@@ -579,10 +580,11 @@ contains
     ! local variables
     integer                    :: localrc, stat
     integer                    :: dimCount, rank
-    integer                    :: item, n
+    integer                    :: iCoord, item, n
     integer                    :: lverbosity
     integer                    :: dimLength(1)
     integer, allocatable       :: ungriddedLBound(:), ungriddedUBound(:)
+    logical                    :: lgeoreference
     character(len=ESMF_MAXSTR) :: llabel
     character(len=ESMF_MAXSTR) :: msgString
     type(ESMF_Array)           :: array
@@ -592,8 +594,20 @@ contains
     type(ESMF_MeshLoc)         :: meshloc
 
     ! local parameters
-    character(len=*), parameter :: coordLabels(3) = &
-      (/ "grid_x", "grid_y", "grid_z" /)
+    character(len=*), parameter :: coordLabels(3,2) = &
+      reshape( (/ &
+        "grid_x", "grid_y", "grid_z", &
+        "lon   ", "lat   ", "lev   "  &
+      /), (/ 3, 2 /) )
+    character(len=*), parameter :: geoAttributes(4,3) = &
+      reshape( (/ &
+        "long_name    ", "longitude    ", &
+        "units        ", "degrees_east ", &
+        "long_name    ", "latitude     ", &
+        "units        ", "degrees_north", &
+        "positive     ", "up           ", &
+        "units        ", "km           "  &
+      /), (/ 4, 3 /) )
 
     ! begin
     if (present(rc)) rc = ESMF_SUCCESS
@@ -604,6 +618,9 @@ contains
 
     lverbosity = 0
     if (present(verbosity)) lverbosity = verbosity
+
+    lgeoreference = .false.
+    if (present(georeference)) lgeoreference = georeference
 
     ! get field GeomType
     call ESMF_FieldGet(field, geomtype=geomtype, rank=rank, rc=localrc)
@@ -626,6 +643,9 @@ contains
         line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
+      ! select set of coordinate labels
+      iCoord = 1
+      if (lgeoreference) iCoord = 2
       do item = 1, dimCount
         call ESMF_GridGetCoord(grid, item, array=array, rc=localrc)
         if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
@@ -633,15 +653,38 @@ contains
           file=__FILE__,  &
           rcToReturn=rc)) &
           return  ! bail out
-        call SWIO_ArrayWrite(array, io, coordLabels(item), rc=localrc)
+        call SWIO_ArrayWrite(array, io, coordLabels(item,iCoord), rc=localrc)
         if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
           file=__FILE__,  &
           rcToReturn=rc)) &
           return  ! bail out
+        if (lgeoreference) then
+          do n = 1, size(geoAttributes, dim=1), 2
+            call io % describe(trim(coordLabels(item,iCoord)), &
+              trim(geoAttributes(n,item)), trim(geoAttributes(n + 1,item)))
+            if (io % err % check(msg="Failure writing attribute " &
+              //trim(geoAttributes(n,item))//" for "//trim(coordLabels(item,iCoord)), &
+              line=__LINE__,  &
+              file=__FILE__)) then
+              call ESMF_LogSetError(ESMF_RC_FILE_WRITE, msg=ESMF_LOGERR_PASSTHRU, &
+                line=__LINE__, &
+                file=__FILE__, &
+                rcToReturn=rc)
+              return  ! bail out
+            end if
+          end do
+        else
+          call SWIO_ArrayWrite(array, io, coordLabels(item,iCoord), rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+        end if
         if (btest(lverbosity,8)) then
           call ESMF_LogWrite(trim(llabel)//": Written coordinate "&
-            //coordLabels(item), ESMF_LOGMSG_INFO, rc=localrc)
+            //coordLabels(item,iCoord), ESMF_LOGMSG_INFO, rc=localrc)
           if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
             line=__LINE__,  &
             file=__FILE__,  &
@@ -1192,7 +1235,7 @@ contains
         end if
 
         ! write Field coordinates and ungridded dimensions
-        call FieldWriteCoord(field, this % io, &
+        call FieldWriteCoord(field, this % io, georeference=this % geoReference, &
           logLabel=trim(name)//": "//trim(pName), verbosity=verbosity, rc=localrc)
         if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
