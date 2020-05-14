@@ -13,6 +13,7 @@ module swio_methods
   private
 
   public :: SWIO_ArrayWrite
+  public :: SWIO_FieldWrite
   public :: SWIO_FieldGetTimeStamp
   public :: SWIO_FieldWriteCoord
   public :: SWIO_GridCreateLatLon
@@ -22,6 +23,10 @@ module swio_methods
 
   interface SWIO_ArrayWrite
     module procedure ArrayWrite
+  end interface
+
+  interface SWIO_FieldWrite
+    module procedure FieldWrite
   end interface
 
   interface SWIO_FieldGetTimeStamp
@@ -299,6 +304,72 @@ contains
       rcToReturn=rc)) return  ! bail out
 
   end subroutine ArrayWrite
+
+  subroutine FieldWrite(field, io, tile, phaseName, rc)
+    type(ESMF_Field)                        :: field
+    class(COMIO_T)                          :: io
+    integer,          optional, intent(in)  :: tile
+    character(len=*), optional, intent(in)  :: phaseName
+    integer,          optional, intent(out) :: rc
+
+    ! local variables
+    integer                    :: localrc
+    integer                    :: item
+    character(len=ESMF_MAXSTR) :: pName
+    character(len=ESMF_MAXSTR) :: fieldName
+    character(len=ESMF_MAXSTR) :: svalue
+    type(ESMF_Array)           :: array
+
+    ! local parameters
+    character(len=*), parameter :: attributeList(2,2) = &
+      reshape( (/ &
+        "LongName ", "long_name", &
+        "Units    ", "units    "  &
+      /), (/2,2/), order = (/2,1/) )
+
+    ! begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    pName = "FieldWrite"
+    if (present(phaseName)) pName = phaseName
+
+    ! get field info
+    call ESMF_FieldGet(field, name=fieldName, array=array, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    call ArrayWrite(array, io, trim(fieldName), tile=tile, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! write attributes
+    do item = 1, size(attributeList, dim=1)
+      call NUOPC_GetAttribute(field, name=trim(attributeList(item,1)), &
+        value=svalue, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call io % describe(trim(fieldName), trim(attributeList(item,2)), trim(svalue))
+      if (io % err % check(msg="Failure writing attribute " &
+        //trim(attributeList(item,2))//" for "//trim(fieldName), &
+        line=__LINE__,  &
+        file=__FILE__)) then
+        call ESMF_LogSetError(ESMF_RC_FILE_WRITE, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__, &
+          file=__FILE__, &
+          rcToReturn=rc)
+        return  ! bail out
+      end if
+    end do
+
+  end subroutine FieldWrite
 
   subroutine MeshWriteCoord(mesh, io, meshloc, rc)
     type(ESMF_Mesh)                           :: mesh
@@ -1131,13 +1202,7 @@ contains
 
       end if
 
-      call ESMF_FieldGet(field, array=array, rc=localrc)
-      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__,  &
-        rcToReturn=rc)) &
-        return  ! bail out
-      call ArrayWrite(array, this % io, trim(standardNameList(item)), rc=localrc)
+      call FieldWrite(field, this % io, phaseName=pName, rc=localrc)
       if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__,  &
