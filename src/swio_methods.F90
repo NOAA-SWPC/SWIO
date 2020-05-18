@@ -315,6 +315,7 @@ contains
     ! local variables
     integer                    :: localrc
     integer                    :: item
+    logical                    :: isSet
     character(len=ESMF_MAXSTR) :: pName
     character(len=ESMF_MAXSTR) :: fieldName
     character(len=ESMF_MAXSTR) :: svalue
@@ -350,22 +351,24 @@ contains
     ! write attributes
     do item = 1, size(attributeList, dim=1)
       call NUOPC_GetAttribute(field, name=trim(attributeList(item,1)), &
-        value=svalue, rc=localrc)
+        value=svalue, isSet=isSet, rc=localrc)
       if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__,  &
         rcToReturn=rc)) &
         return  ! bail out
-      call io % describe(trim(fieldName), trim(attributeList(item,2)), trim(svalue))
-      if (io % err % check(msg="Failure writing attribute " &
-        //trim(attributeList(item,2))//" for "//trim(fieldName), &
-        line=__LINE__,  &
-        file=__FILE__)) then
-        call ESMF_LogSetError(ESMF_RC_FILE_WRITE, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__, &
-          file=__FILE__, &
-          rcToReturn=rc)
-        return  ! bail out
+      if (isSet) then
+        call io % describe(trim(fieldName), trim(attributeList(item,2)), trim(svalue))
+        if (io % err % check(msg="Failure writing attribute " &
+          //trim(attributeList(item,2))//" for "//trim(fieldName), &
+          line=__LINE__,  &
+          file=__FILE__)) then
+          call ESMF_LogSetError(ESMF_RC_FILE_WRITE, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__, &
+            file=__FILE__, &
+            rcToReturn=rc)
+          return  ! bail out
+        end if
       end if
     end do
 
