@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.63])
-AC_INIT([swio], [0.0.1], [ipe_devteam@noaa.gov])
+AC_INIT([swio], [0.0.2], [ipe_devteam@noaa.gov])
 
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIR([m4])
