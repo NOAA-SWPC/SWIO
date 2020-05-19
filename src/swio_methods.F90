@@ -600,7 +600,7 @@ contains
     character(len=*), parameter :: coordLabels(3,2) = &
       reshape( (/ &
         "grid_x", "grid_y", "grid_z", &
-        "lon   ", "lat   ", "lev   "  &
+        "lon   ", "lat   ", "alt   "  &
       /), (/ 3, 2 /) )
     character(len=*), parameter :: geoAttributes(4,3) = &
       reshape( (/ &
@@ -608,7 +608,7 @@ contains
         "units        ", "degrees_east ", &
         "long_name    ", "latitude     ", &
         "units        ", "degrees_north", &
-        "positive     ", "up           ", &
+        "long_name    ", "altitude     ", &
         "units        ", "km           "  &
       /), (/ 4, 3 /) )
 
