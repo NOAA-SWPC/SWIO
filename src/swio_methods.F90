@@ -1110,6 +1110,7 @@ contains
     character(len=15)                   :: timeStamp
     character(len=ESMF_MAXSTR)          :: name
     character(len=ESMF_MAXSTR)          :: pName
+    character(len=ESMF_MAXSTR)          :: fieldName
     character(len=ESMF_MAXSTR)          :: fileName
     character(len=ESMF_MAXSTR), pointer :: standardNameList(:)
     type(ESMF_Array)                    :: array
@@ -1264,6 +1265,37 @@ contains
           return  ! bail out
       end if
     end do
+
+    ! write computed fields if present
+    if (isTimeValid) then
+      do item = 1, size(this % task)
+        do i = 1, size(this % task(item) % fieldOut)
+          call FieldWrite(this % task(item) % fieldOut(i), this % io, &
+            phaseName=pName, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          if (btest(verbosity,8)) then
+            call ESMF_FieldGet(this % task(item) % fieldOut(i), name=fieldName, &
+              rc=localrc)
+            if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__,  &
+              rcToReturn=rc)) &
+              return  ! bail out
+            call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Written "&
+              //trim(fieldName), ESMF_LOGMSG_INFO, rc=localrc)
+            if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__,  &
+              rcToReturn=rc)) &
+              return  ! bail out
+          end if
+        end do
+      end do
+    end if
 
     call this % io % close()
     if (this % io % err % check(msg="Failure closing file "//trim(fileName), &

@@ -17,6 +17,7 @@ module SWIO
 
   use swio_data
   use swio_methods
+  use swio_calculator
 
   implicit none
 
@@ -939,6 +940,14 @@ module SWIO
       end if
     end if
 
+    ! parse calculator tasks if present
+    call SWIO_CalculatorParse(gcomp, label="compute_fields::", &
+      phaseName=rName, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__, &
+      file=__FILE__)) &
+      return  ! bail out
+
     ! -> set InitializeDataComplete Component Attribute to "true", indicating
     ! to the driver that this Component has fully initialized its data
     call NUOPC_CompAttributeSet(gcomp, &
@@ -961,6 +970,13 @@ module SWIO
 
     ! begin
     rc = ESMF_SUCCESS
+
+    ! run calculator
+    call SWIO_CalculatorRun(gcomp, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
 
     ! write output
     call SWIO_Output(gcomp, phaseName=rName, rc=rc)
@@ -993,6 +1009,13 @@ module SWIO
 
     ! get component's info
     call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! run calculator
+    call SWIO_CalculatorRun(gcomp, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &

@@ -5,6 +5,13 @@ module swio_data
 
   implicit none
 
+  type SWIO_Task_T
+    type(ESMF_Field), pointer :: fieldOut(:)
+    type(ESMF_Field), pointer :: fieldInp(:)
+    character(ESMF_MAXSTR)    :: operation
+    real(ESMF_KIND_R8)        :: scaleFactor
+  end type
+
   type SWIO_Data_T
     integer                 :: logLevel
     integer                 :: fieldCount
@@ -12,7 +19,8 @@ module swio_data
     character(ESMF_MAXSTR)  :: gridType
     character(ESMF_MAXSTR)  :: filePrefix
     character(ESMF_MAXSTR)  :: fileSuffix
-    class(COMIO_T), pointer :: io
+    type(SWIO_Task_T), pointer :: task(:)
+    class(COMIO_T),    pointer :: io
   end type
 
   type SWIO_InternalState_T

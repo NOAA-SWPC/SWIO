@@ -124,7 +124,8 @@ am__v_AR_1 =
 libswio_a_AR = $(AR) $(ARFLAGS)
 libswio_a_LIBADD =
 am_libswio_a_OBJECTS = libswio_a-swio.$(OBJEXT) \
-	libswio_a-swio_data.$(OBJEXT) libswio_a-swio_methods.$(OBJEXT)
+	libswio_a-swio_data.$(OBJEXT) libswio_a-swio_methods.$(OBJEXT) \
+	libswio_a-swio_calculator.$(OBJEXT)
 libswio_a_OBJECTS = $(am_libswio_a_OBJECTS)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
@@ -296,7 +297,7 @@ top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 lib_LIBRARIES = libswio.a
-libswio_a_SOURCES = swio.F90 swio_data.F90 swio_methods.F90
+libswio_a_SOURCES = swio.F90 swio_data.F90 swio_methods.F90 swio_calculator.F90
 libswio_a_FCFLAGS = 
 all: all-am
 
@@ -398,6 +399,12 @@ libswio_a-swio_methods.o: swio_methods.F90
 
 libswio_a-swio_methods.obj: swio_methods.F90
 	$(AM_V_PPFC)$(FC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libswio_a_FCFLAGS) $(FCFLAGS) -c -o libswio_a-swio_methods.obj `if test -f 'swio_methods.F90'; then $(CYGPATH_W) 'swio_methods.F90'; else $(CYGPATH_W) '$(srcdir)/swio_methods.F90'; fi`
+
+libswio_a-swio_calculator.o: swio_calculator.F90
+	$(AM_V_PPFC)$(FC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libswio_a_FCFLAGS) $(FCFLAGS) -c -o libswio_a-swio_calculator.o `test -f 'swio_calculator.F90' || echo '$(srcdir)/'`swio_calculator.F90
+
+libswio_a-swio_calculator.obj: swio_calculator.F90
+	$(AM_V_PPFC)$(FC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libswio_a_FCFLAGS) $(FCFLAGS) -c -o libswio_a-swio_calculator.obj `if test -f 'swio_calculator.F90'; then $(CYGPATH_W) 'swio_calculator.F90'; else $(CYGPATH_W) '$(srcdir)/swio_calculator.F90'; fi`
 
 ID: $(am__tagged_files)
 	$(am__define_uniq_tagged_files); mkid -fID $$unique
@@ -610,8 +617,10 @@ clean-modules:
 clean-local: clean-modules
 
 # dependencies
-libswio_a-swio.$(OBJEXT) : libswio_a-swio_data.$(OBJEXT) libswio_a-swio_methods.$(OBJEXT)
+libswio_a-swio.$(OBJEXT) : libswio_a-swio_data.$(OBJEXT) libswio_a-swio_methods.$(OBJEXT) \
+	libswio_a-swio_calculator.$(OBJEXT)
 libswio_a-swio_methods.$(OBJEXT) : libswio_a-swio_data.$(OBJEXT)
+libswio_a-swio_calculator.$(OBJEXT) : libswio_a-swio_data.$(OBJEXT)
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

@@ -1,0 +1,884 @@
+module swio_calculator
+
+  use ESMF
+  use NUOPC
+  use swio_data
+
+  implicit none
+
+  type SWIO_Math_T
+    character(ESMF_MAXSTR) :: funcName 
+    integer                :: argCount
+    integer                :: resCount
+    integer                :: rank
+  end type
+
+  type(SWIO_Math_T) :: mathTable(2) = &
+    (/ &
+      SWIO_Math_T( "column_integrate", 1, 1, 2 ),  &
+      SWIO_Math_T( "column_max_point", 1, 2, 2 )   &
+    /)
+
+  private
+
+  public :: SWIO_CalculatorRun
+  public :: SWIO_CalculatorParse
+
+  interface SWIO_CalculatorParse
+    module procedure CalculatorParse
+  end interface
+
+  interface SWIO_CalculatorRun
+    module procedure CalculatorRun
+  end interface
+
+
+contains
+
+  subroutine CalculatorParse(gcomp, label, phaseName, rc)
+    type(ESMF_GridComp)                     :: gcomp
+    character(len=*),           intent(in)  :: label
+    character(len=*), optional, intent(in)  :: phaseName
+    integer,          optional, intent(out) :: rc
+
+    ! local variables
+    logical                             :: isPresent
+    logical                             :: listEnd
+    integer                             :: localrc, stat
+    integer                             :: i, iop, item, j
+    integer                             :: lineCount, columnCount
+    integer                             :: verbosity
+    character(len=ESMF_MAXSTR)          :: name
+    character(len=ESMF_MAXSTR)          :: pName
+    character(len=ESMF_MAXSTR)          :: fieldName, fieldUnits
+    character(len=ESMF_MAXSTR)          :: svalue
+    character(len=ESMF_MAXSTR)          :: msgString
+    character(len=ESMF_MAXSTR), pointer :: standardNameList(:)
+    type(ESMF_Config)                   :: config
+    type(ESMF_Field)                    :: field
+    type(ESMF_State)                    :: importState
+    type(SWIO_InternalState_T)          :: is
+    type(SWIO_Data_T), pointer          :: this
+
+    ! begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    pName = "CalculatorParse"
+    if (present(phaseName)) pName = phaseName
+
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! get component's internal state
+    call ESMF_GridCompGetInternalState(gcomp, is, localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    this => is % wrap
+
+    if (this % fieldCount == 0) then
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": No input fields", &
+          ESMF_LOGMSG_INFO, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
+      return
+    end if
+
+    ! get component's configuration
+    call ESMF_GridCompGet(gcomp, config=config, importState=importState, &
+      rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! look for compute field table
+    call ESMF_ConfigFindLabel(config, label, isPresent=isPresent, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    item = 0
+
+    if (isPresent) then
+
+      ! - get number of rows in the table
+      call ESMF_ConfigGetDim(config, lineCount, columnCount, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      allocate(this % task(lineCount), stat=stat)
+      if (ESMF_LogFoundAllocError(statusToCheck=stat, &
+        msg="Unable to allocate memory", &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      ! - retrieve imported field list
+      nullify(standardNameList)
+      call NUOPC_GetStateMemberLists(importState, &
+        StandardNameList=standardNameList, nestedFlag=.true., rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      ! - read field standard name from 1st column and advertise field
+
+      ! - reposition input pointer to beginning of table
+      call ESMF_ConfigFindLabel(config, label, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      do
+        ! get next row
+        call ESMF_ConfigNextLine(config, tableEnd=listEnd, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        if (listEnd) exit
+
+        item = item + 1
+
+        this % task(item) % operation = ""
+
+        ! get function
+        call ESMF_ConfigGetAttribute(config, svalue, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+
+        this % task(item) % operation = ESMF_UtilStringLowerCase(svalue, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+
+        iop = 0
+        do i = 1, size(mathTable)
+          if (trim(this % task(item) % operation) == trim(mathTable(i) % funcName)) then
+            iop = i
+            exit
+          end if
+        end do
+
+        if (iop == 0) then
+          call ESMF_LogSetError(ESMF_RC_NOT_IMPL, &
+            msg="- operation: "//trim(this % task(item) % operation), &
+            line=__LINE__, &
+            file=__FILE__,  &
+            rcToReturn=rc)
+          return  ! bail out
+        end if
+
+        allocate(this % task(item) % fieldInp(mathTable(iop) % argCount), &
+          this % task(item) % fieldOut(mathTable(iop) % resCount), stat=stat)
+        if (ESMF_LogFoundAllocError(statusToCheck=stat, &
+          msg="Unable to allocate memory", &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+
+        ! retrieve operands
+        do i = 1, size(this % task(item) % fieldInp)
+          ! get input field name
+          call ESMF_ConfigGetAttribute(config, svalue, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          ! retrieve field from import state and store reference to operand array
+          do j = 1, size(standardNameList)
+            if (trim(standardNameList(j)) == trim(svalue)) then
+              call ESMF_StateGet(importState, trim(standardNameList(j)), &
+                this % task(item) % fieldInp(i), rc=localrc)
+              if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+                line=__LINE__,  &
+                file=__FILE__,  &
+                rcToReturn=rc)) &
+                return  ! bail out
+              exit
+            end if
+          end do
+        end do
+
+        ! create output fields
+        do i = 1, size(this % task(item) % fieldOut)
+          ! get computed field name
+          call ESMF_ConfigGetAttribute(config, fieldName, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          ! get computed field units
+          call ESMF_ConfigGetAttribute(config, fieldUnits, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          ! create computed field
+          this % task(item) % fieldOut(i) = &
+            FieldCreate(this % task(item) % fieldInp(1), mathTable(iop) % rank, &
+              fieldName, fieldUnits, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+        end do
+
+        ! retrieve scaling factor, if present
+        call ESMF_ConfigGetAttribute(config, this % task(item) % scaleFactor, &
+          default=1._ESMF_KIND_R8, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+
+        if (btest(verbosity,8)) then
+          write(msgString,'(a,": ",a,": compute[",i0,"]: ")') trim(name), &
+            trim(pName), item
+          call AppendFieldListString(msgString, this % task(item) % fieldOut, &
+            rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          write(msgString,'(a,": ",a,": - Function  : ",a)') trim(name), &
+            trim(pName), trim(this % task(item) % operation)
+          call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          write(msgString,'(a,": ",a,": - Arguments : ")') trim(name), trim(pName)
+          call AppendFieldListString(msgString, this % task(item) % fieldInp, &
+            rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+        end if
+      end do
+
+    end if
+
+    if (btest(verbosity,8)) then
+      if (item == 0) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": compute: None", &
+          ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+    end if
+
+  end subroutine CalculatorParse
+
+
+  subroutine Calculate(task, rc)
+    type(SWIO_Task_T), intent(inout) :: task
+    integer, optional, intent(out)   :: rc
+
+    ! -- local variables
+    integer :: localrc
+
+    ! -- begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    select case (trim(task % operation))
+      case ("column_integrate")
+        if (size(task % fieldInp) /= 1) then
+          call ESMF_LogSetError(ESMF_RC_INTNRL_INCONS, &
+            msg="this function requires one input field", &
+            line=__LINE__, &
+            file=__FILE__,  &
+            rcToReturn=rc)
+          return  ! bail out
+        end if
+        if (size(task % fieldOut) /= 1) then
+          call ESMF_LogSetError(ESMF_RC_INTNRL_INCONS, &
+            msg="this function provides one output field", &
+            line=__LINE__, &
+            file=__FILE__,  &
+            rcToReturn=rc)
+          return  ! bail out
+        end if
+        call columnIntegrate(task % fieldOut(1), task % fieldInp(1), &
+          task % scaleFactor, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      case ("column_max_point")
+        if (size(task % fieldInp) /= 1) then
+          call ESMF_LogSetError(ESMF_RC_INTNRL_INCONS, &
+            msg="this function requires one input field", &
+            line=__LINE__, &
+            file=__FILE__,  &
+            rcToReturn=rc)
+          return  ! bail out
+        end if
+        if (size(task % fieldOut) /= 2) then
+          call ESMF_LogSetError(ESMF_RC_INTNRL_INCONS, &
+            msg="this function provides two output fields", &
+            line=__LINE__, &
+            file=__FILE__,  &
+            rcToReturn=rc)
+          return  ! bail out
+        end if
+        call columnMaxLoc(task % fieldOut(1), task % fieldOut(2), &
+          task % fieldInp(1), rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      case default
+        ! -- nothing to do
+    end select
+
+  end subroutine Calculate
+
+  subroutine CalculatorRun(gcomp, phaseName, rc)
+    type(ESMF_GridComp)                     :: gcomp
+    character(len=*), optional, intent(in)  :: phaseName
+    integer,          optional, intent(out) :: rc
+
+    ! local variables
+    logical                             :: isPresent
+    integer                             :: localrc
+    integer                             :: i, iop, item, stat
+    integer                             :: verbosity
+    character(len=ESMF_MAXSTR)          :: name
+    character(len=ESMF_MAXSTR)          :: msgString
+    character(len=ESMF_MAXSTR)          :: pName
+    character(len=ESMF_MAXSTR), pointer :: standardNameList(:)
+    type(ESMF_Field)                    :: field
+    type(SWIO_InternalState_T)          :: is
+    type(SWIO_Data_T), pointer          :: this
+
+    ! begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    pName = "CalculatorRun"
+    if (present(phaseName)) pName = phaseName
+
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! get component's internal state
+    call ESMF_GridCompGetInternalState(gcomp, is, localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    this => is % wrap
+
+    ! run calculator's tasks
+    do item = 1, size(this % task)
+      call Calculate(this % task(item), rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      if (btest(verbosity,8)) then
+          write(msgString,'(a,": computed[",i0,"]: ")') trim(name) &
+            //": "//trim(pName), item
+          call AppendFieldListString(msgString, this % task(item) % fieldOut, &
+            rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+      end if
+    end do
+
+  end subroutine CalculatorRun
+
+  ! -- Tools
+  subroutine AppendFieldListString(string, fieldList, rc)
+    character(len=*),  intent(inout) :: string
+    type(ESMF_Field),  intent(in)    :: fieldList(:)
+    integer, optional, intent(out)   :: rc
+
+    ! -- local variables
+    integer :: localrc
+    integer :: item
+    character(ESMF_MAXSTR) :: fieldName
+
+    ! -- begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    do item = 1, size(fieldList)
+      call ESMF_FieldGet(fieldList(item), name=fieldName, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      if (item > 1) then
+        string = trim(string) // ", " // trim(fieldName)
+      else
+        string = trim(string) // "  " // trim(fieldName)
+      end if
+    end do
+
+  end subroutine AppendFieldListString
+
+  function FieldCreate(field, rank, name, units, rc) result (fieldOut)
+    type(ESMF_Field),         intent(in)  :: field
+    integer,                  intent(in)  :: rank
+    character(len=*),         intent(in)  :: name
+    character(len=*),         intent(in)  :: units
+    integer, optional,        intent(out) :: rc
+
+    integer                  :: localrc, stat
+    integer                  :: dimCount
+    integer, allocatable     :: gridToFieldMap(:)
+    character(ESMF_MAXSTR)   :: fieldName
+    type(ESMF_Field)         :: fieldOut
+    type(ESMF_Grid)          :: grid
+    type(ESMF_GeomType_Flag) :: geomType
+    type(ESMF_Mesh)          :: mesh
+    type(ESMF_MeshLoc)       :: meshloc
+    type(ESMF_StaggerLoc)    :: staggerloc
+    type(ESMF_TypeKind_Flag) :: typekind
+
+    ! begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    call ESMF_FieldGet(field, name=fieldName, geomtype=geomType, &
+      typekind=typekind, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    if (geomType == ESMF_GEOMTYPE_GRID) then
+
+      call ESMF_FieldGet(field, grid=grid, staggerloc=staggerloc, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      call ESMF_GridGet(grid, dimCount=dimCount, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      if (rank > dimCount) then
+        ! -- add ungridded dimensions (not yet implemented)
+        call ESMF_LogSetError(ESMF_RC_NOT_IMPL, &
+          msg="output field rank must be <= input field dimCount", &
+          line=__LINE__, &
+          file=__FILE__,  &
+          rcToReturn=rc)
+        return  ! bail out
+      else
+        allocate(gridToFieldMap(dimCount), stat=stat)
+        if (ESMF_LogFoundAllocError(statusToCheck=stat, &
+          msg="Unable to allocate memory", &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        call ESMF_FieldGet(field, gridToFieldMap=gridToFieldMap, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        if (rank < dimCount) gridToFieldMap(rank+1:) = 0 
+      end if
+
+      fieldOut = ESMF_FieldCreate(grid, typekind, staggerloc=staggerloc, &
+        gridToFieldMap=gridToFieldMap, name=name, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      deallocate(gridToFieldMap, stat=stat)
+      if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
+        msg="Unable to free up memory", &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+    else if (geomType == ESMF_GEOMTYPE_MESH) then
+
+      call ESMF_FieldGet(field, mesh=mesh, meshloc=meshloc, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      call ESMF_GridGet(grid, dimCount=dimCount, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      if (rank > dimCount) then
+        ! -- add ungridded dimensions (not yet implemented)
+        call ESMF_LogSetError(ESMF_RC_NOT_IMPL, &
+          msg="output field rank must be <= input field dimCount", &
+          line=__LINE__, &
+          file=__FILE__,  &
+          rcToReturn=rc)
+        return  ! bail out
+      else
+        allocate(gridToFieldMap(dimCount), stat=stat)
+        if (ESMF_LogFoundAllocError(statusToCheck=stat, &
+          msg="Unable to allocate memory", &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        call ESMF_FieldGet(field, gridToFieldMap=gridToFieldMap, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        if (rank < dimCount) gridToFieldMap(rank+1:) = 0 
+      end if
+
+      fieldOut = ESMF_FieldCreate(mesh, typekind, meshloc=meshloc, &
+        gridToFieldMap=gridToFieldMap, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      deallocate(gridToFieldMap, stat=stat)
+      if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
+        msg="Unable to free up memory", &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+    else
+      call ESMF_LogSetError(ESMF_RC_NOT_IMPL, &
+        msg="Only Grid and Mesh geometry types are supported", &
+        line=__LINE__, &
+        file=__FILE__,  &
+        rcToReturn=rc)
+      return  ! bail out
+    end if
+
+    ! add field metadata and initialize
+
+    ! - add Attribute packages
+    call ESMF_AttributeAdd(fieldOut, convention="ESG", purpose="General", &
+      rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    call ESMF_AttributeAdd(fieldOut, convention="NUOPC", purpose="Instance",   &
+      nestConvention="ESG", nestPurpose="General", rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! - add name and units
+    call ESMF_AttributeSet(fieldOut, &
+      name="StandardName", value=name, &
+      convention="NUOPC", purpose="Instance", attnestflag=ESMF_ATTNEST_ON, &
+      rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    call ESMF_AttributeSet(fieldOut, &
+      name="LongName", value=name, &
+      convention="NUOPC", purpose="Instance", attnestflag=ESMF_ATTNEST_ON, &
+      rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    call ESMF_AttributeSet(fieldOut, &
+      name="Units", value=units, &
+      convention="NUOPC", purpose="Instance", attnestflag=ESMF_ATTNEST_ON, &
+      rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! - initialize to zero
+    call ESMF_FieldFill(fieldOut, dataFillScheme="const", &
+      const1=0._ESMF_KIND_R8, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+  end function FieldCreate
+
+
+  ! -- Available math functions
+
+  subroutine columnIntegrate(fieldOut, fieldFunc, scaleFactor, rc)
+    type(ESMF_Field),   intent(inout) :: fieldOut
+    type(ESMF_Field),   intent(in)    :: fieldFunc
+    real(ESMF_KIND_R8), intent(in)    :: scaleFactor
+    integer, optional,  intent(out)   :: rc
+
+    ! -- local variables
+    integer :: localrc
+    integer :: dimCount, localDe, localDeCount
+    integer :: i, j, k, km1
+    integer, dimension(3) :: lb, ub
+    real(ESMF_KIND_R8) :: coef
+    real(ESMF_KIND_R8), dimension(:),     pointer :: z
+    real(ESMF_KIND_R8), dimension(:,:),   pointer :: q
+    real(ESMF_KIND_R8), dimension(:,:,:), pointer :: f
+    type(ESMF_Grid)  :: grid
+
+    ! -- begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    call ESMF_FieldGet(fieldFunc, grid=grid, localDeCount=localDeCount, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    call ESMF_GridGet(grid, dimCount=dimCount, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    if (dimCount /= 3) then
+      call ESMF_LogSetError(ESMF_RC_NOT_IMPL, &
+        msg="this function only supports fields on 3D grids", &
+        line=__LINE__, &
+        file=__FILE__,  &
+        rcToReturn=rc)
+      return  ! bail out
+    end if
+
+    do localDe = 0, localDeCount-1
+      call ESMF_FieldGet(fieldFunc, localDe=localDe, farrayPtr=f, &
+        computationalLBound=lb, computationalUBound=ub, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_GridGetCoord(grid, 3, localDe=localDe, farrayPtr=z, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_FieldGet(fieldOut, localDe=localDe, farrayPtr=q, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      q(lb(1):ub(1),lb(2):ub(2)) = 0._ESMF_KIND_R8
+
+      do k = lb(3) + 1, ub(3)
+        km1 = k - 1
+        coef = 0.5_ESMF_KIND_R8 * scaleFactor * (z(k) - z(km1))
+        do j = lb(2), ub(2)
+          do i = lb(1), ub(1)
+            q(i,j) = q(i,j) + coef * (f(i,j,km1)+f(i,j,k))
+          end do
+        end do
+      end do
+    end do
+
+  end subroutine columnIntegrate
+
+  subroutine columnMaxLoc(fieldMax, fieldLoc, fieldFunc, rc)
+    type(ESMF_Field),  intent(inout) :: fieldMax
+    type(ESMF_Field),  intent(inout) :: fieldLoc
+    type(ESMF_Field),  intent(in)    :: fieldFunc
+    integer, optional, intent(out)   :: rc
+
+    ! -- local variables
+    integer :: localrc
+    integer :: dimCount, localDe, localDeCount
+    integer :: i, j, k1, k2, k3, k_max
+    integer, dimension(3) :: lb, ub
+    real(ESMF_KIND_R8) :: x1, x2, x3, y1, y2, y3, a, b, c
+    real(ESMF_KIND_R8), dimension(:),     pointer :: z
+    real(ESMF_KIND_R8), dimension(:,:),   pointer :: q, h
+    real(ESMF_KIND_R8), dimension(:,:,:), pointer :: f
+    type(ESMF_Grid)  :: grid
+
+    ! -- begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    call ESMF_FieldGet(fieldFunc, grid=grid, localDeCount=localDeCount, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    call ESMF_GridGet(grid, dimCount=dimCount, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    if (dimCount /= 3) then
+      call ESMF_LogSetError(ESMF_RC_NOT_IMPL, &
+        msg="this function only supports fields on 3D grids", &
+        line=__LINE__, &
+        file=__FILE__,  &
+        rcToReturn=rc)
+      return  ! bail out
+    end if
+
+    do localDe = 0, localDeCount-1
+      call ESMF_FieldGet(fieldFunc, localDe=localDe, farrayPtr=f, &
+        computationalLBound=lb, computationalUBound=ub, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_GridGetCoord(grid, 3, localDe=localDe, farrayPtr=z, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_FieldGet(fieldMax, localDe=localDe, farrayPtr=q, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_FieldGet(fieldLoc, localDe=localDe, farrayPtr=h, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      q(lb(1):ub(1),lb(2):ub(2)) = 0._ESMF_KIND_R8
+      h(lb(1):ub(1),lb(2):ub(2)) = 0._ESMF_KIND_R8
+
+      do j = lb(2), ub(2)
+        do i = lb(1), ub(1)
+          k_max = maxval(maxloc(f(i,j,:)))
+          k1 = max(k_max - 1, lb(3))
+          k2 = k_max
+          k3 = min(k_max + 1, ub(3))
+          x1 = z(k1)
+          x2 = z(k2)
+          x3 = z(k3)
+          y1 = f(i,j,k1)
+          y2 = f(i,j,k2)
+          y3 = f(i,j,k3)
+          c = (x3*y1 - x3*y2 + x1*y2 + x2*y3 - x2*y1 - x1*y3) &
+              / (x3*x1*x1 - x3*x2*x2 + x1*x2*x2 - x2*x1*x1 + x2*x3*x3 - x1*x3*x3)
+          b = (y2 - (c*x2*x2) + (c*x1*x1) - y1) / (x2 - x1)
+          a = y1 - (b*x1) - (c*x1*x1)
+          h(i,j) = (0._ESMF_KIND_R8 - b) / (2*c)
+          q(i,j) = a + (b*h(i,j)) + (c*h(i,j)*h(i,j))
+        end do
+      end do
+
+    end do
+
+  end subroutine columnMaxLoc
+
+end module swio_calculator
