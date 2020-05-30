@@ -236,6 +236,27 @@ contains
           end do
         end do
 
+        ! retrieve additional parameters, if required
+        if (mathTable(iop) % parCount > 0) then
+          allocate(this % task(item) % paramInp(mathTable(iop) % parCount), stat=stat)
+          if (ESMF_LogFoundAllocError(statusToCheck=stat, &
+            msg="Unable to allocate memory", &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+        end if
+
+        do i = 1, mathTable(iop) % parCount
+          call ESMF_ConfigGetAttribute(config, this % task(item) % paramInp(i), &
+            rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+        end do
+
         ! create output fields
         do i = 1, size(this % task(item) % fieldOut)
           ! get computed field name
@@ -256,27 +277,6 @@ contains
           this % task(item) % fieldOut(i) = &
             FieldCreate(this % task(item) % fieldInp(1), mathTable(iop) % rank, &
               fieldName, fieldUnits, rc=localrc)
-          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__,  &
-            file=__FILE__,  &
-            rcToReturn=rc)) &
-            return  ! bail out
-        end do
-
-        ! retrieve additional parameters, if required
-        if (mathTable(iop) % parCount > 0) then
-          allocate(this % task(item) % paramInp(mathTable(iop) % parCount), stat=stat)
-          if (ESMF_LogFoundAllocError(statusToCheck=stat, &
-            msg="Unable to allocate memory", &
-            line=__LINE__,  &
-            file=__FILE__,  &
-            rcToReturn=rc)) &
-            return  ! bail out
-        end if
-
-        do i = 1, mathTable(iop) % parCount
-          call ESMF_ConfigGetAttribute(config, this % task(item) % paramInp(i), &
-            rc=localrc)
           if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
             line=__LINE__,  &
             file=__FILE__,  &
