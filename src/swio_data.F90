@@ -6,10 +6,11 @@ module swio_data
   implicit none
 
   type SWIO_Task_T
-    type(ESMF_Field), pointer :: fieldOut(:)
-    type(ESMF_Field), pointer :: fieldInp(:)
-    character(ESMF_MAXSTR)    :: operation
-    real(ESMF_KIND_R8)        :: scaleFactor
+    type(ESMF_Field),   pointer :: fieldOut(:)
+    type(ESMF_Field),   pointer :: fieldInp(:)
+    real(ESMF_KIND_R8), pointer :: paramInp(:)
+    character(ESMF_MAXSTR)      :: operation
+    real(ESMF_KIND_R8)          :: scaleFactor
   end type
 
   type SWIO_Data_T
