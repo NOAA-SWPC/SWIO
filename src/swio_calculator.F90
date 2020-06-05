@@ -18,7 +18,7 @@ module swio_calculator
     (/ &
       SWIO_Math_T( "column_integrate",  1, 0, 1, 2 ),  &
       SWIO_Math_T( "column_max_point",  1, 0, 2, 2 ),  &
-      SWIO_Math_T( "column_max_region", 1, 1, 2, 2 )   &
+      SWIO_Math_T( "column_max_region", 1, 2, 2, 2 )   &
     /)
 
   private
@@ -1016,10 +1016,11 @@ contains
     ! -- local variables
     integer :: localrc
     integer :: dimCount, localDe, localDeCount
-    integer :: i, j, k1, k2, k3, k_max
+    integer :: i, j
+    integer :: ka, kb, km, km1, kp1, kloc, kglb
     integer, dimension(3) :: lb, ub
     logical :: isValid
-    real(ESMF_KIND_R8) :: x1, x2, x3, y1, y2, y3, a, b, c
+    real(ESMF_KIND_R8) :: x1, x2, x3, y1, y2, y3, a, b, c, fm, fmax
     real(ESMF_KIND_R8), dimension(:),     pointer :: z
     real(ESMF_KIND_R8), dimension(:,:),   pointer :: q, h
     real(ESMF_KIND_R8), dimension(:,:,:), pointer :: f
@@ -1100,22 +1101,55 @@ contains
 
       do j = lb(2), ub(2)
         do i = lb(1), ub(1)
-          k_max = maxloc(f(i,j,:), 1, mask = (z >= task % paramInp(1)))
-          k1 = max(k_max - 1, lb(3))
-          k2 = k_max
-          k3 = min(k_max + 1, ub(3))
-          x1 = z(k1)
-          x2 = z(k2)
-          x3 = z(k3)
-          y1 = f(i,j,k1)
-          y2 = f(i,j,k2)
-          y3 = f(i,j,k3)
-          c = (x3*y1 - x3*y2 + x1*y2 + x2*y3 - x2*y1 - x1*y3) &
-              / (x3*x1*x1 - x3*x2*x2 + x1*x2*x2 - x2*x1*x1 + x2*x3*x3 - x1*x3*x3)
-          b = (y2 - (c*x2*x2) + (c*x1*x1) - y1) / (x2 - x1)
-          a = y1 - (b*x1) - (c*x1*x1)
-          h(i,j) = (0._ESMF_KIND_R8 - b) / (2*c)
-          q(i,j) = a + (b*h(i,j)) + (c*h(i,j)*h(i,j))
+          ka = minloc(z, dim=1, mask = z >= task % paramInp(1))
+          kb = maxloc(z, dim=1, mask = z <= task % paramInp(2))
+
+          kloc = 0
+          kglb = kb
+          km1  = 0
+          kp1  = 0
+          fmax = -1._ESMF_KIND_R8
+          do km = kb-1, ka+1, -1
+            km1 = max(km-1,ka)
+            kp1 = min(km+1,kb)
+            fm  = f(i,j,km)
+            if (fm > f(i,j,kp1)) then
+              kglb = km
+              if (fm > f(i,j,km1) .and. fm > fmax) then
+                fmax = fm
+                kloc = km
+              end if
+            end if
+          end do
+
+          if (kloc < 1) then
+            ! -- local maximum not found: use global maximum
+            if (f(i,j,ka) > f(i,j,kglb)) kglb = ka
+            h(i,j) = z(kglb)
+            q(i,j) = f(i,j,kglb)
+          else
+            km1 = max(kloc-1,ka)
+            kp1 = min(kloc+1,kb)
+            if (kp1-km1 == 2) then
+              ! -- refine maximum through quadratic fit
+              x1 = z(km1)
+              x2 = z(kloc)
+              x3 = z(kp1)
+              y1 = f(i,j,km1)
+              y2 = f(i,j,kloc)
+              y3 = f(i,j,kp1)
+              c = (x3*y1 - x3*y2 + x1*y2 + x2*y3 - x2*y1 - x1*y3) &
+                  / (x3*x1*x1 - x3*x2*x2 + x1*x2*x2 - x2*x1*x1 + x2*x3*x3 - x1*x3*x3)
+              b = (y2 - (c*x2*x2) + (c*x1*x1) - y1) / (x2 - x1)
+              a = y1 - (b*x1) - (c*x1*x1)
+              h(i,j) = - b / (2*c)
+              q(i,j) = a + (b*h(i,j)) + (c*h(i,j)*h(i,j))
+            else
+              ! -- not enough points for quadratic fit
+              h(i,j) = z(kloc)
+              q(i,j) = f(i,j,kloc)
+            end if
+          end if
         end do
       end do
 
