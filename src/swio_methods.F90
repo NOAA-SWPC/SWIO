@@ -18,6 +18,7 @@ module swio_methods
   public :: SWIO_FieldWriteCoord
   public :: SWIO_GridCreateLatLon
   public :: SWIO_MeshWriteCoord
+  public :: SWIO_MetadataParse
   public :: SWIO_Output
 
 
@@ -43,6 +44,10 @@ module swio_methods
 
   interface SWIO_MeshWriteCoord
     module procedure MeshWriteCoord
+  end interface
+
+  interface SWIO_MetadataParse
+    module procedure MetadataParse
   end interface
 
   interface SWIO_Output
@@ -1266,8 +1271,8 @@ contains
       end if
     end do
 
-    ! write computed fields if present
     if (isTimeValid) then
+      ! write computed fields if present
       do item = 1, size(this % task)
         do i = 1, size(this % task(item) % fieldOut)
           call FieldWrite(this % task(item) % fieldOut(i), this % io, &
@@ -1294,6 +1299,29 @@ contains
               return  ! bail out
           end if
         end do
+      end do
+
+      ! write metadata as global attributes if provided
+      do item = 1, size(this % meta)
+        call this % io % describe(trim(this % meta(item) % key), trim(this % meta(item) % value))
+        if (this % io % err % check(msg="Failure writing global attribute " &
+          //trim(this % meta(item) % key)//" to "//trim(fileName), &
+          line=__LINE__,  &
+          file=__FILE__)) then
+          call ESMF_LogSetError(ESMF_RC_FILE_WRITE, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__, &
+            file=__FILE__)
+          return  ! bail out
+        end if
+        if (btest(verbosity,8)) then
+          call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Written metadata: "&
+            //trim(this % meta(item) % key), ESMF_LOGMSG_INFO, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+        end if
       end do
     end if
 
@@ -1328,5 +1356,166 @@ contains
     end if
 
   end subroutine FileWrite
+
+  subroutine MetadataParse(gcomp, label, phaseName, rc)
+    type(ESMF_GridComp)                     :: gcomp
+    character(len=*),           intent(in)  :: label
+    character(len=*), optional, intent(in)  :: phaseName
+    integer,          optional, intent(out) :: rc
+
+    ! local variables
+    logical                             :: isPresent
+    logical                             :: eolFlag, listEnd
+    integer                             :: localrc, stat
+    integer                             :: item
+    integer                             :: lineCount, columnCount
+    integer                             :: verbosity
+    character(len=ESMF_MAXSTR)          :: name
+    character(len=ESMF_MAXSTR)          :: pName
+    character(len=ESMF_MAXSTR)          :: msgString
+    type(ESMF_Config)                   :: config
+    type(SWIO_InternalState_T)          :: is
+    type(SWIO_Data_T), pointer          :: this
+
+    ! begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    pName = "MetadataParse"
+    if (present(phaseName)) pName = phaseName
+
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! get component's internal state
+    call ESMF_GridCompGetInternalState(gcomp, is, localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    this => is % wrap
+
+    if (this % fieldCount == 0) then
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": No input fields", &
+          ESMF_LOGMSG_INFO, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
+      return
+    end if
+
+    ! get component's configuration
+    call ESMF_GridCompGet(gcomp, config=config, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! look for compute field table
+    call ESMF_ConfigFindLabel(config, label, isPresent=isPresent, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    item = 0
+
+    if (isPresent) then
+
+      ! - get number of rows in the table
+      call ESMF_ConfigGetDim(config, lineCount, columnCount, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      ! - create metadata table in memory
+      allocate(this % meta(lineCount), stat=stat)
+      if (ESMF_LogFoundAllocError(statusToCheck=stat, &
+        msg="Unable to allocate memory", &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      ! - reposition input pointer to beginning of table
+      call ESMF_ConfigFindLabel(config, label, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      do
+        ! get next row
+        call ESMF_ConfigNextLine(config, tableEnd=listEnd, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        if (listEnd) exit
+
+        item = item + 1
+
+        this % meta(item) % key   = ""
+        this % meta(item) % value = ""
+
+        ! get key
+        call ESMF_ConfigGetAttribute(config, this % meta(item) % key, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+
+        ! get value
+        call ESMF_ConfigGetAttribute(config, this % meta(item) % value, &
+          default="N/A", eolFlag=eolFlag, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+
+        if (btest(verbosity,8)) then
+          write(msgString,'(a,": ",a,": metadata[",i0,"]: ",a,": ",a)') &
+            trim(name), trim(pName), item, trim(this % meta(item) % key), &
+            trim(this % meta(item) % value)
+          call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+        end if
+      end do
+
+    end if
+
+    if (btest(verbosity,8)) then
+      if (item == 0) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": metadata: None", &
+          ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+    end if
+
+  end subroutine MetadataParse
 
 end module swio_methods

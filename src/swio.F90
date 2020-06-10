@@ -271,6 +271,8 @@ module SWIO
     this % gridType     = ""
     this % filePrefix   = ""
     this % fileSuffix   = ""
+    nullify(this % meta)
+    nullify(this % task)
     nullify(this % io)
 
     ! get output grid selection
@@ -942,6 +944,14 @@ module SWIO
 
     ! parse calculator tasks if present
     call SWIO_CalculatorParse(gcomp, label="compute_fields::", &
+      phaseName=rName, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__, &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! parse metadata if provided
+    call SWIO_MetadataParse(gcomp, label="output_metadata::", &
       phaseName=rName, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__, &

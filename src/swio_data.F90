@@ -13,13 +13,18 @@ module swio_data
     real(ESMF_KIND_R8)          :: scaleFactor
   end type
 
+  type SWIO_Pair_T
+    character(ESMF_MAXSTR) :: key
+    character(ESMF_MAXSTR) :: value
+  end type
+
   type SWIO_Data_T
-    integer                 :: logLevel
     integer                 :: fieldCount
     logical                 :: geoReference
     character(ESMF_MAXSTR)  :: gridType
     character(ESMF_MAXSTR)  :: filePrefix
     character(ESMF_MAXSTR)  :: fileSuffix
+    type(SWIO_Pair_T), pointer :: meta(:)
     type(SWIO_Task_T), pointer :: task(:)
     class(COMIO_T),    pointer :: io
   end type
