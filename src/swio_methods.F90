@@ -1303,6 +1303,8 @@ contains
 
       ! write metadata as global attributes if provided
       do item = 1, size(this % meta)
+        if (trim(this % meta(item) % value) == "__swio_field_timestamp__") &
+          this % meta(item) % value = timeStamp
         call this % io % describe(trim(this % meta(item) % key), trim(this % meta(item) % value))
         if (this % io % err % check(msg="Failure writing global attribute " &
           //trim(this % meta(item) % key)//" to "//trim(fileName), &
