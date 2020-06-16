@@ -56,15 +56,17 @@ module swio_methods
 
 contains
 
-  subroutine CoordinateSetLinear(numValues, valueRange, values, minIndex, maxIndex, rc)
+  subroutine CoordinateSetLinear(numValues, valueRange, values, minIndex, maxIndex, wrap, rc)
     integer,            intent(in)  :: numValues
     real(ESMF_KIND_R8), intent(in)  :: valueRange(:)
     real(ESMF_KIND_R8), pointer     :: values(:)
     integer, optional,  intent(in)  :: minIndex
     integer, optional,  intent(in)  :: maxIndex
+    logical, optional,  intent(in)  :: wrap
     integer, optional,  intent(out) :: rc
 
     ! -- local variables
+    logical            :: addEndpoint
     integer            :: item, numItems
     integer            :: localMinIndex, localMaxIndex
     real(ESMF_KIND_R8) :: valueIncrement
@@ -81,6 +83,9 @@ contains
       return
     end if
 
+    addEndpoint = .true.
+    if (present(wrap)) addEndpoint = .not.wrap
+
     values = 0._ESMF_KIND_R8
 
     if (numValues < 1) return
@@ -93,14 +98,16 @@ contains
     valueIncrement = 0._ESMF_KIND_R8
 
     if (numValues > 1) then
-      numItems = numValues - 1
+      numItems = numValues
+      if (addEndpoint) numItems = numItems - 1
       valueIncrement = (valueRange(2) - valueRange(1)) / numItems
       do item = localMinIndex, localMaxIndex
         values(item) = valueRange(1) + (item - 1) * valueIncrement
       end do
       ! overwrite first and last element for accuracy
-      if (localMinIndex ==         1) values(        1) = valueRange(1)
-      if (localMinIndex == numValues) values(numValues) = valueRange(2)
+      if (localMinIndex == 1) values(1) = valueRange(1)
+      if ((localMinIndex == numValues) .and. addEndpoint) &
+        values(numValues) = valueRange(2)
     end if
     
   end subroutine CoordinateSetLinear
@@ -1033,7 +1040,7 @@ contains
         end if
       else
         call CoordinateSetLinear(dimLengths(item), coordRange(:,item), &
-          coordPtr, minIndex=lbnd(1), maxIndex=ubnd(1), rc=localrc)
+          coordPtr, minIndex=lbnd(1), maxIndex=ubnd(1), wrap=(item==1), rc=localrc)
         if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
           file=__FILE__,  &
