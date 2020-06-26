@@ -19,6 +19,7 @@ module swio_methods
   public :: SWIO_GridCreateLatLon
   public :: SWIO_MeshWriteCoord
   public :: SWIO_MetadataParse
+  public :: SWIO_OutputFieldsParse
   public :: SWIO_Output
 
 
@@ -48,6 +49,10 @@ module swio_methods
 
   interface SWIO_MetadataParse
     module procedure MetadataParse
+  end interface
+
+  interface SWIO_OutputFieldsParse
+    module procedure OutputFieldsParse
   end interface
 
   interface SWIO_Output
@@ -317,10 +322,11 @@ contains
 
   end subroutine ArrayWrite
 
-  subroutine FieldWrite(field, io, tile, phaseName, rc)
+  subroutine FieldWrite(field, io, tile, name, phaseName, rc)
     type(ESMF_Field)                        :: field
     class(COMIO_T)                          :: io
     integer,          optional, intent(in)  :: tile
+    character(len=*), optional, intent(in)  :: name
     character(len=*), optional, intent(in)  :: phaseName
     integer,          optional, intent(out) :: rc
 
@@ -347,12 +353,16 @@ contains
     if (present(phaseName)) pName = phaseName
 
     ! get field info
-    call ESMF_FieldGet(field, name=fieldName, array=array, rc=localrc)
-    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__,  &
-      file=__FILE__,  &
-      rcToReturn=rc)) &
-      return  ! bail out
+     call ESMF_FieldGet(field, name=fieldName, array=array, rc=localrc)
+     if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+       line=__LINE__,  &
+       file=__FILE__,  &
+       rcToReturn=rc)) &
+       return  ! bail out
+
+    ! replace output name if requested
+    if (present(name)) fieldName = name
+
     call ArrayWrite(array, io, trim(fieldName), tile=tile, rc=localrc)
     if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
@@ -1116,7 +1126,8 @@ contains
     integer                             :: localrc
     integer                             :: i, item, stat
     integer                             :: dimCount
-    integer                             :: nameCount
+    integer                             :: fieldCount
+    integer                             :: itemCount
     integer                             :: rank
     integer                             :: verbosity
     character(len=15)                   :: timeStamp
@@ -1158,7 +1169,7 @@ contains
       return  ! bail out
     this => is % wrap
 
-    if (this % fieldCount == 0) then
+    if (this % outputCount == 0) then
       if (btest(verbosity,8)) then
         call ESMF_LogWrite(trim(name)//": "//trim(pName)//": No fields to write", &
           ESMF_LOGMSG_INFO, rc=localrc)
@@ -1189,99 +1200,112 @@ contains
       rcToReturn=rc)) &
       return  ! bail out
 
-    nameCount = 0
-    if (associated(standardNameList)) nameCount = size(standardNameList)
+    itemCount = 0
+    if (associated(standardNameList)) itemCount = size(standardNameList)
 
-    fileName = ""
-
-    do item = 1, nameCount
-      call ESMF_StateGet(importState, trim(standardNameList(item)), field, rc=localrc)
-      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__,  &
-        rcToReturn=rc)) &
-        return  ! bail out
-      call ESMF_FieldGet(field, rank=rank, rc=localrc)
-      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__,  &
-        rcToReturn=rc)) &
-        return  ! bail out
-      if (item == 1) then
-        call SWIO_FieldGetTimeStamp(field, timeStamp, isTimeValid, rc=localrc)
+    if (itemCount == 0) then
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": No imported fields", &
+          ESMF_LOGMSG_INFO, rc=localrc)
         if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
           file=__FILE__,  &
           rcToReturn=rc)) &
           return  ! bail out
-        if (.not.isTimeValid) then
-          if (btest(verbosity,8)) then
-            call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Field: "&
-              //trim(standardNameList(item))//" - time is invalid", &
-              ESMF_LOGMSG_INFO, rc=localrc)
-            if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-              line=__LINE__,  &
-              file=__FILE__,  &
-              rcToReturn=rc)) &
-              return  ! bail out
-          end if
-          exit
-        end if
+      end if
+      return
+    end if
 
-        ! open file
-        fileName = trim(this % filePrefix) // "." // timeStamp // "." // trim(this % fileSuffix)
-        call this % io % open(fileName, "c")
-        if (this % io % err % check(msg="Failure creating file "//trim(fileName), &
+    ! -- check if time stamp of imported fields is valid -- use field #1
+    item = 1
+    call ESMF_StateGet(importState, trim(standardNameList(item)), field, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    call SWIO_FieldGetTimeStamp(field, timeStamp, isTimeValid, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    if (isTimeValid) then
+      ! open file
+      fileName = trim(this % filePrefix) // "." // timeStamp // "." // trim(this % fileSuffix)
+      call this % io % open(fileName, "c")
+      if (this % io % err % check(msg="Failure creating file "//trim(fileName), &
+        line=__LINE__,  &
+        file=__FILE__)) then
+        call ESMF_LogSetError(ESMF_RC_FILE_CREATE, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__, &
+          file=__FILE__,  &
+          rcToReturn=rc)
+        return  ! bail out
+      end if
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Opened file "//trim(fileName), &
+          ESMF_LOGMSG_INFO, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
-          file=__FILE__)) then
-          call ESMF_LogSetError(ESMF_RC_FILE_CREATE, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__, &
-            file=__FILE__,  &
-            rcToReturn=rc)
+          file=__FILE__,  &
+          rcToReturn=rc)) &
           return  ! bail out
-        end if
+      end if
+
+      ! write Field coordinates and ungridded dimensions
+      call FieldWriteCoord(field, this % io, georeference=this % geoReference, &
+        logLabel=trim(name)//": "//trim(pName), verbosity=verbosity, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      ! write select output fields
+      itemCount = 0
+      if (associated(this % output)) itemCount = size(this % output)
+      do item = 1, itemCount
+        call ESMF_StateGet(importState, trim(this % output(item) % key), field, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        call ESMF_FieldGet(field, rank=rank, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        call FieldWrite(field, this % io, phaseName=pName, &
+          name=this % output(item) % value, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
         if (btest(verbosity,8)) then
-          call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Opened file "//trim(fileName), &
-            ESMF_LOGMSG_INFO, rc=localrc)
+          call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Written "&
+            //trim(standardNameList(item)), ESMF_LOGMSG_INFO, rc=localrc)
           if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
             line=__LINE__,  &
             file=__FILE__,  &
             rcToReturn=rc)) &
             return  ! bail out
         end if
+      end do
 
-        ! write Field coordinates and ungridded dimensions
-        call FieldWriteCoord(field, this % io, georeference=this % geoReference, &
-          logLabel=trim(name)//": "//trim(pName), verbosity=verbosity, rc=localrc)
-        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__,  &
-          file=__FILE__,  &
-          rcToReturn=rc)) &
-          return  ! bail out
-
-      end if
-
-      call FieldWrite(field, this % io, phaseName=pName, rc=localrc)
-      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__,  &
-        file=__FILE__,  &
-        rcToReturn=rc)) &
-        return  ! bail out
-      if (btest(verbosity,8)) then
-        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Written "&
-          //trim(standardNameList(item)), ESMF_LOGMSG_INFO, rc=localrc)
-        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__,  &
-          file=__FILE__,  &
-          rcToReturn=rc)) &
-          return  ! bail out
-      end if
-    end do
-
-    if (isTimeValid) then
       ! write computed fields if present
-      do item = 1, size(this % task)
-        do i = 1, size(this % task(item) % fieldOut)
+      itemCount = 0
+      if (associated(this % task)) itemCount = size(this % task)
+      do item = 1, itemCount
+        fieldCount = 0
+        if (associated(this % task(item) % fieldOut)) &
+          fieldCount = size(this % task(item) % fieldOut)
+        do i = 1, fieldCount
           call FieldWrite(this % task(item) % fieldOut(i), this % io, &
             phaseName=pName, rc=localrc)
           if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
@@ -1309,7 +1333,9 @@ contains
       end do
 
       ! write metadata as global attributes if provided
-      do item = 1, size(this % meta)
+      itemCount = 0
+      if (associated(this % meta)) itemCount = size(this % meta)
+      do item = 1, itemCount
         if (trim(this % meta(item) % value) == "__swio_field_timestamp__") then
           call this % io % describe(trim(this % meta(item) % key), timeStamp)
         else
@@ -1334,26 +1360,39 @@ contains
             return  ! bail out
         end if
       end do
-    end if
 
-    call this % io % close()
-    if (this % io % err % check(msg="Failure closing file "//trim(fileName), &
-      line=__LINE__,  &
-      file=__FILE__)) then
-      call ESMF_LogSetError(ESMF_RC_FILE_CLOSE, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__,  &
-        rcToReturn=rc)
-      return  ! bail out
-    end if
-    if (btest(verbosity,8)) then
-      call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Closed file "//trim(fileName), &
-        ESMF_LOGMSG_INFO, rc=localrc)
-      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      ! close file
+      call this % io % close()
+      if (this % io % err % check(msg="Failure closing file "//trim(fileName), &
         line=__LINE__,  &
-        file=__FILE__,  &
-        rcToReturn=rc)) &
+        file=__FILE__)) then
+        call ESMF_LogSetError(ESMF_RC_FILE_CLOSE, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__, &
+          file=__FILE__,  &
+          rcToReturn=rc)
         return  ! bail out
+      end if
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Closed file "//trim(fileName), &
+          ESMF_LOGMSG_INFO, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
+
+    else
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Field: "&
+          //trim(standardNameList(item))//" - time is invalid", &
+          ESMF_LOGMSG_INFO, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
     end if
 
     if (associated(standardNameList)) then
@@ -1528,5 +1567,169 @@ contains
     end if
 
   end subroutine MetadataParse
+
+
+  subroutine OutputFieldsParse(gcomp, label, phaseName, rc)
+    type(ESMF_GridComp)                     :: gcomp
+    character(len=*),           intent(in)  :: label
+    character(len=*), optional, intent(in)  :: phaseName
+    integer,          optional, intent(out) :: rc
+
+    ! local variables
+    logical                             :: isPresent
+    logical                             :: eolFlag, listEnd
+    integer                             :: localrc, stat
+    integer                             :: item
+    integer                             :: lineCount, columnCount
+    integer                             :: verbosity
+    character(len=ESMF_MAXSTR)          :: name
+    character(len=ESMF_MAXSTR)          :: pName
+    character(len=ESMF_MAXSTR)          :: msgString
+    type(ESMF_Config)                   :: config
+    type(SWIO_InternalState_T)          :: is
+    type(SWIO_Data_T), pointer          :: this
+
+    ! begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    pName = "OutputFieldsParse"
+    if (present(phaseName)) pName = phaseName
+
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! get component's internal state
+    call ESMF_GridCompGetInternalState(gcomp, is, localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    this => is % wrap
+
+    if (this % fieldCount == 0) then
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": No input fields", &
+          ESMF_LOGMSG_INFO, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
+      return
+    end if
+
+    ! get component's configuration
+    call ESMF_GridCompGet(gcomp, config=config, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! look for compute field table
+    call ESMF_ConfigFindLabel(config, label, isPresent=isPresent, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    item = 0
+
+    if (isPresent) then
+
+      ! - get number of rows in the table
+      call ESMF_ConfigGetDim(config, lineCount, columnCount, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      ! - create metadata table in memory
+      allocate(this % output(lineCount), stat=stat)
+      if (ESMF_LogFoundAllocError(statusToCheck=stat, &
+        msg="Unable to allocate memory", &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      ! - reposition input pointer to beginning of table
+      call ESMF_ConfigFindLabel(config, label, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      do
+        ! get next row
+        call ESMF_ConfigNextLine(config, tableEnd=listEnd, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        if (listEnd) exit
+
+        item = item + 1
+
+        this % output(item) % key   = ""
+        this % output(item) % value = ""
+
+        ! get key
+        call ESMF_ConfigGetAttribute(config, this % output(item) % key, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+
+        ! get value
+        call ESMF_ConfigGetAttribute(config, this % output(item) % value, &
+          default=this % output(item) % key, eolFlag=eolFlag, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+
+        if (btest(verbosity,8)) then
+          write(msgString,'(a,": ",a,": output[",i0,"]: ",a,": ",a)') &
+            trim(name), trim(pName), item, trim(this % output(item) % key), &
+            trim(this % output(item) % value)
+          call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+        end if
+      end do
+
+    end if
+
+    this % outputCount = this % outputCount + item
+
+    if (btest(verbosity,8)) then
+      if (item == 0) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": output: None", &
+          ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+    end if
+
+  end subroutine OutputFieldsParse
 
 end module swio_methods
