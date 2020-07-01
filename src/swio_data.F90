@@ -20,11 +20,13 @@ module swio_data
 
   type SWIO_Data_T
     integer                 :: fieldCount
+    integer                 :: outputCount
     logical                 :: geoReference
     character(ESMF_MAXSTR)  :: gridType
     character(ESMF_MAXSTR)  :: filePrefix
     character(ESMF_MAXSTR)  :: fileSuffix
     type(SWIO_Pair_T), pointer :: meta(:)
+    type(SWIO_Pair_T), pointer :: output(:)
     type(SWIO_Task_T), pointer :: task(:)
     class(COMIO_T),    pointer :: io
   end type

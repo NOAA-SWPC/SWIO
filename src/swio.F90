@@ -267,11 +267,13 @@ module SWIO
     this => is % wrap
     ! initialize internal state
     this % fieldCount   = 0
+    this % outputCount  = 0
     this % geoReference = .false.
     this % gridType     = ""
     this % filePrefix   = ""
     this % fileSuffix   = ""
     nullify(this % meta)
+    nullify(this % output)
     nullify(this % task)
     nullify(this % io)
 
@@ -790,8 +792,32 @@ module SWIO
       return  ! bail out
     this => is % wrap
 
+    ! parse output fields
+    call SWIO_OutputFieldsParse(gcomp, label="output_fields::", &
+      phaseName=rName, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__, &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! parse calculator tasks if present
+    call SWIO_CalculatorParse(gcomp, label="compute_fields::", &
+      phaseName=rName, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__, &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! parse metadata if provided
+    call SWIO_MetadataParse(gcomp, label="output_metadata::", &
+      phaseName=rName, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__, &
+      file=__FILE__)) &
+      return  ! bail out
+
     ! initialize I/O layer
-    if (this % fieldCount > 0) then
+    if (this % outputCount > 0) then
       ! get component's configuration
       call ESMF_GridCompGet(gcomp, config=config, vm=vm, rc=rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
@@ -941,22 +967,6 @@ module SWIO
           return  ! bail out
       end if
     end if
-
-    ! parse calculator tasks if present
-    call SWIO_CalculatorParse(gcomp, label="compute_fields::", &
-      phaseName=rName, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
-
-    ! parse metadata if provided
-    call SWIO_MetadataParse(gcomp, label="output_metadata::", &
-      phaseName=rName, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
 
     ! -> set InitializeDataComplete Component Attribute to "true", indicating
     ! to the driver that this Component has fully initialized its data

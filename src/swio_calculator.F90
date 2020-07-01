@@ -336,6 +336,8 @@ contains
 
     end if
 
+    this % outputCount = this % outputCount + item
+
     if (btest(verbosity,8)) then
       if (item == 0) then
         call ESMF_LogWrite(trim(name)//": "//trim(pName)//": compute: None", &
