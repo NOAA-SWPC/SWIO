@@ -14,11 +14,12 @@ module swio_calculator
     integer                :: rank
   end type
 
-  type(SWIO_Math_T), parameter :: mathTable(3) = &
+  type(SWIO_Math_T), parameter :: mathTable(4) = &
     (/ &
-      SWIO_Math_T( "column_integrate",  1, 0, 1, 2 ),  &
-      SWIO_Math_T( "column_max_point",  1, 0, 2, 2 ),  &
-      SWIO_Math_T( "column_max_region", 1, 2, 2, 2 )   &
+      SWIO_Math_T( "column_integrate",   1, 0, 1, 2 ),  &
+      SWIO_Math_T( "column_max_point",   1, 0, 2, 2 ),  &
+      SWIO_Math_T( "column_max_region",  1, 2, 2, 2 ),  &
+      SWIO_Math_T( "column_interpolate", 2, 1, 1, 2 )   &
     /)
 
   private
@@ -365,21 +366,32 @@ contains
     select case (trim(task % operation))
       case ("column_integrate")
         call columnIntegrate(task, rc=localrc)
-        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        if (ESMF_LogFoundError(rcToCheck=localrc, &
+          msg="Failure in function: "//task % operation, &
           line=__LINE__,  &
           file=__FILE__,  &
           rcToReturn=rc)) &
           return  ! bail out
       case ("column_max_point")
         call columnMaxLoc(task, rc=localrc)
-        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        if (ESMF_LogFoundError(rcToCheck=localrc, &
+          msg="Failure in function: "//task % operation, &
           line=__LINE__,  &
           file=__FILE__,  &
           rcToReturn=rc)) &
           return  ! bail out
       case ("column_max_region")
         call columnMaxLocRegion(task, rc=localrc)
-        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        if (ESMF_LogFoundError(rcToCheck=localrc, &
+          msg="Failure in function: "//task % operation, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      case ("column_interpolate")
+        call columnInterpolate(task, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, &
+          msg="Failure in function: "//task % operation, &
           line=__LINE__,  &
           file=__FILE__,  &
           rcToReturn=rc)) &
@@ -1158,5 +1170,240 @@ contains
     end do
 
   end subroutine columnMaxLocRegion
+
+  subroutine columnInterpolate(task, rc)
+    type(SWIO_Task_T), intent(inout) :: task
+    integer, optional, intent(out)   :: rc
+
+    ! -- local variables
+    integer :: localrc
+    integer :: dimCount, rank
+    integer :: localDe, localDeCount
+    integer :: i, j
+    integer, dimension(3) :: lb, ub
+    logical :: isValid
+    real(ESMF_KIND_R8), dimension(1)              :: xd, yd
+    real(ESMF_KIND_R8), dimension(:),     pointer :: x, y
+    real(ESMF_KIND_R8), dimension(:,:),   pointer :: q
+    real(ESMF_KIND_R8), dimension(:,:,:), pointer :: f, h
+    type(ESMF_Grid)  :: grid
+
+    ! -- begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    ! -- check if arguments are valid
+    isValid = isTaskValid(task, mathTable(4), rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    if (.not.isValid) then
+      call ESMF_LogSetError(ESMF_RC_ARG_INCOMP, &
+        msg="invalid argument list", &
+        line=__LINE__, &
+        file=__FILE__, &
+        rcToReturn=rc)
+      return  ! bail out
+    end if
+
+    do i = 1, size(task % fieldInp)
+      call ESMF_FieldGet(task % fieldInp(i), grid=grid, dimCount=dimCount, &
+        rank=rank, localDeCount=localDeCount, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_GridGet(grid, dimCount=dimCount, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      if ((dimCount /= 2) .or. (rank /= 3)) then
+        call ESMF_LogSetError(ESMF_RC_NOT_IMPL, &
+          msg="this function only supports 2D fields with multiple vertical levels", &
+          line=__LINE__, &
+          file=__FILE__, &
+          rcToReturn=rc)
+        return  ! bail out
+      end if
+    end do
+
+    do localDe = 0, localDeCount-1
+      call ESMF_FieldGet(task % fieldInp(1), localDe=localDe, farrayPtr=f, &
+        computationalLBound=lb, computationalUBound=ub, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_FieldGet(task % fieldInp(2), localDe=localDe, farrayPtr=h, &
+        rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_FieldGet(task % fieldOut(1), localDe=localDe, farrayPtr=q, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      nullify(x, y)
+
+      xd(1) = task % paramInp(1)
+      q(lb(1):ub(1),lb(2):ub(2)) = 0._ESMF_KIND_R8
+
+      do j = lb(2), ub(2)
+        do i = lb(1), ub(1)
+          x => h(i,j,:)
+          y => f(i,j,:)
+          yd(1) = 0._ESMF_KIND_R8
+          call PolyInterpolate(x, y, xd, yd, 1, localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          q(i,j) = yd(1)
+        end do
+      end do
+
+    end do
+
+  end subroutine columnInterpolate
+
+  ! -- Shared auxiliary math functions
+
+  subroutine PolyInterpolate(xs, ys, xd, yd, m, rc)
+    real(ESMF_KIND_R8), dimension(:), intent(in)  :: xs, ys, xd
+    real(ESMF_KIND_R8), dimension(:), intent(out) :: yd
+    integer, intent(in)  :: m
+    integer, intent(out) :: rc
+
+    ! -- local variables
+    integer :: i, j, k, n, np
+    real(ESMF_KIND_R8) :: x, y, dy
+
+    ! -- begin
+    rc = ESMF_SUCCESS
+
+    n = m + 1
+    np = size(xs)
+    do i = 1, size(xd)
+      x = xd(i)
+      y = 0._ESMF_KIND_R8
+      call locate(xs, np, x, j)
+      if (j == np) then
+        y = ys(np)
+      else if (j > 0) then
+        k = min(max(j-(n-1)/2,1), np+1-n)
+        call polint(xs(k:), ys(k:), n, x, y, dy, rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg="Error in polint", &
+          line=__LINE__, &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+      yd(i) = y
+    end do
+
+  end subroutine PolyInterpolate
+
+  ! -- auxiliary numerical subroutines for interpolation/extrapolation from:
+  ! -- W. H. Press, S. A. Teukolsky, W. T. Vetterling, B. P. Flannery,
+  ! -- Numerical Recipes in Fortran 77: The Art of Scientific Computing
+  ! -- (Vol. 1 of Fortran Numerical Recipes), 2nd Ed., Cambridge Univ. Press
+  ! -- 1992
+
+  subroutine locate(xx, n, x, j)
+    implicit none
+    integer, intent(in) :: n
+    real(ESMF_KIND_R8), intent(in) :: x, xx(n)
+    integer, intent(out) :: j
+
+    ! -- local variables
+    integer :: jl, jm, ju
+
+    ! -- begin
+    jl = 0
+    ju = n + 1
+    do while (ju-jl.gt.1)
+      jm = (ju+jl)/2
+      if ((xx(n).ge.xx(1)).eqv.(x.ge.xx(jm))) then
+        jl = jm
+      else
+        ju = jm
+      end if
+    end do
+    if (x.eq.xx(1)) then
+      j = 1
+    else if (x.eq.xx(n)) then
+      j = n - 1
+    else
+      j = jl
+    end if
+
+  end subroutine locate
+
+  subroutine polint(xa, ya, n, x, y, dy, rc)
+
+    implicit none
+
+    integer, intent(in) :: n
+    real(ESMF_KIND_R8),    intent(in) :: xa(n), ya(n)
+    real(ESMF_KIND_R8),    intent(in) :: x
+    real(ESMF_KIND_R8),   intent(out) :: y, dy
+    integer, intent(out) :: rc
+
+    ! -- local variables
+    integer, parameter :: nmax = 10
+    integer :: i, m, ns
+    real(ESMF_KIND_R8) :: den, dif, dift, ho, hp, w
+    real(ESMF_KIND_R8), dimension(nmax) :: c, d
+
+    ! -- begin
+    rc = ESMF_SUCCESS
+
+    ns = 1
+    dif = abs(x - xa(1))
+    do i = 1, n
+      dift = abs(x - xa(i))
+      if (dift < dif) then
+        ns  = i
+        dif = dift
+      end if
+      c(i) = ya(i)
+      d(i) = ya(i)
+    end do
+    y = ya(ns)
+    ns = ns - 1
+    do m = 1, n - 1
+      do i = 1, n - m
+        ho = xa(i)   - x
+        hp = xa(i+m) - x
+        w  = c(i+1)-d(i)
+        den = ho - hp
+        if (den == 0.) then
+          rc = ESMF_FAILURE
+          exit
+        end if
+        den = w / den
+        d(i) = hp * den
+        c(i) = ho * den
+      end do
+      if (2*ns < n - m) then
+        dy = c(ns+1)
+      else
+        dy = d(ns)
+        ns = ns - 1
+      end if
+      y = y + dy
+    end do
+
+  end subroutine polint
 
 end module swio_calculator
