@@ -14,12 +14,13 @@ module swio_calculator
     integer                :: rank
   end type
 
-  type(SWIO_Math_T), parameter :: mathTable(4) = &
+  type(SWIO_Math_T), parameter :: mathTable(5) = &
     (/ &
       SWIO_Math_T( "column_integrate",   1, 0, 1, 2 ),  &
       SWIO_Math_T( "column_max_point",   1, 0, 2, 2 ),  &
       SWIO_Math_T( "column_max_region",  1, 2, 2, 2 ),  &
-      SWIO_Math_T( "column_interpolate", 2, 1, 1, 2 )   &
+      SWIO_Math_T( "column_interpolate", 2, 1, 1, 2 ),  &
+      SWIO_Math_T( "column_o_n2_ratio",  4, 1, 1, 2 )   &
     /)
 
   private
@@ -390,6 +391,14 @@ contains
           return  ! bail out
       case ("column_interpolate")
         call columnInterpolate(task, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, &
+          msg="Failure in function: "//task % operation, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      case ("column_o_n2_ratio")
+        call columnON2ratio(task, rc=localrc)
         if (ESMF_LogFoundError(rcToCheck=localrc, &
           msg="Failure in function: "//task % operation, &
           line=__LINE__,  &
@@ -1276,6 +1285,159 @@ contains
     end do
 
   end subroutine columnInterpolate
+
+  subroutine columnON2ratio(task, rc)
+    type(SWIO_Task_T), intent(inout) :: task
+    integer, optional, intent(out)   :: rc
+
+    ! -- local variables
+    integer :: localrc
+    integer :: dimCount, rank
+    integer :: localDe, localDeCount
+    integer :: i, j, k
+    integer, dimension(3) :: lb, ub
+    logical :: isValid
+    real(ESMF_KIND_R8) :: fscale
+    real(ESMF_KIND_R8) :: n2_lev_ratio, n2_target, n2_total, n2_total_prev
+    real(ESMF_KIND_R8) :: o_total, o_total_prev
+    real(ESMF_KIND_R8), dimension(:,:),   pointer :: r
+    real(ESMF_KIND_R8), dimension(:,:,:), pointer :: o, n2, t, h
+    type(ESMF_Grid)  :: grid
+
+    ! -- constants
+    ! From: CODATA Recommended Values of the Fundamental Physical Constants: 2018
+    ! - standard acceleration of gravity
+    real(ESMF_KIND_R8), parameter :: g0 = 9.80665_ESMF_KIND_R8
+    ! - unified atomic mass unit (kg)
+    real(ESMF_KIND_R8), parameter :: um = 1.66053906660E-27_ESMF_KIND_R8
+    ! - Boltzmann's constant (J K-1)
+    real(ESMF_KIND_R8), parameter :: kB = 1.380649E-23_ESMF_KIND_R8
+    ! From: Geodetic Reference System 1980.
+    ! - Earth's mean radius (m)
+    real(ESMF_KIND_R8), parameter :: Re = 6371008.7714_ESMF_KIND_R8
+    ! From: Atomic weights of the elements 2013 (IUPAC Technical Report)
+    !       Pure and Applied Chemistry, Volume 88, Issue 3, Pages 265–291, eISSN
+    !       1365-3075, ISSN 0033-4545, DOI: https://doi.org/10.1515/pac-2015-0305.
+    ! - Standard atomic weight of oxygen (air)
+    real(ESMF_KIND_R8), parameter :: o_weight = 15.9994_ESMF_KIND_R8
+    ! - Standard molecular weight of nitrogen (air)
+    real(ESMF_KIND_R8), parameter :: n2_weight = 2 * 14.0067_ESMF_KIND_R8
+
+    ! -- local constants
+    real(ESMF_KIND_R8), parameter :: const = kB / (um * g0)
+
+    ! -- begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    ! -- check if arguments are valid
+    isValid = isTaskValid(task, mathTable(5), rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    if (.not.isValid) then
+      call ESMF_LogSetError(ESMF_RC_ARG_INCOMP, &
+        msg="invalid argument list", &
+        line=__LINE__, &
+        file=__FILE__, &
+        rcToReturn=rc)
+      return  ! bail out
+    end if
+
+    do i = 1, size(task % fieldInp)
+      call ESMF_FieldGet(task % fieldInp(i), grid=grid, dimCount=dimCount, &
+        rank=rank, localDeCount=localDeCount, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_GridGet(grid, dimCount=dimCount, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      if ((dimCount /= 2) .or. (rank /= 3)) then
+        call ESMF_LogSetError(ESMF_RC_NOT_IMPL, &
+          msg="this function only supports 2D fields with multiple vertical levels", &
+          line=__LINE__, &
+          file=__FILE__, &
+          rcToReturn=rc)
+        return  ! bail out
+      end if
+    end do
+
+    do localDe = 0, localDeCount-1
+      call ESMF_FieldGet(task % fieldInp(1), localDe=localDe, farrayPtr=o, &
+        computationalLBound=lb, computationalUBound=ub, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_FieldGet(task % fieldInp(2), localDe=localDe, farrayPtr=n2, &
+        rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_FieldGet(task % fieldInp(3), localDe=localDe, farrayPtr=t, &
+        rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_FieldGet(task % fieldInp(4), localDe=localDe, farrayPtr=h, &
+        rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+      call ESMF_FieldGet(task % fieldOut(1), localDe=localDe, farrayPtr=r, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      n2_target = task % paramInp(1)
+      n2_total  = 0._ESMF_KIND_R8
+      o_total   = 0._ESMF_KIND_R8
+      r(lb(1):ub(1),lb(2):ub(2)) = 0._ESMF_KIND_R8
+
+      if (n2_target > 0._ESMF_KIND_R8) then
+        do j = lb(2), ub(2)
+          do i = lb(1), ub(1)
+            do k = lb(3), ub(3)
+              fscale = 1._ESMF_KIND_R8 + h(i,j,k) / Re
+              fscale = const * fscale * fscale * t(i,j,k)
+
+              o_total_prev  = o_total
+              n2_total_prev = n2_total
+              n2_total = n2(i,j,k) * fscale / n2_weight
+              o_total  = o (i,j,k) * fscale / o_weight
+
+              if ((n2_total < n2_target) .and. (k > lb(3)) .and. &
+                  (n2_total > 0._ESMF_KIND_R8) .and. (n2_total_prev /= n2_total) .and. &
+                  ( o_total > 0._ESMF_KIND_R8) .and. ( o_total_prev /= o_total)) then
+                n2_lev_ratio = log(n2_target/n2_total) / log(n2_total_prev/n2_total)
+                r(i,j) = o_total * exp(n2_lev_ratio*log(o_total_prev/o_total)) / n2_target
+                exit
+              end if
+
+            end do
+          end do
+        end do
+      end if
+
+    end do
+
+  end subroutine columnON2ratio
 
   ! -- Shared auxiliary math functions
 
