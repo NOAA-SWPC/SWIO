@@ -25,6 +25,7 @@ module swio_data
     character(ESMF_MAXSTR)  :: gridType
     character(ESMF_MAXSTR)  :: filePrefix
     character(ESMF_MAXSTR)  :: fileSuffix
+    character(2)            :: cmode
     type(SWIO_Pair_T), pointer :: meta(:)
     type(SWIO_Pair_T), pointer :: output(:)
     type(SWIO_Task_T), pointer :: task(:)
