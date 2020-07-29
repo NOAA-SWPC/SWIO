@@ -1235,7 +1235,7 @@ contains
     if (isTimeValid) then
       ! open file
       fileName = trim(this % filePrefix) // "." // timeStamp // "." // trim(this % fileSuffix)
-      call this % io % open(fileName, "c")
+      call this % io % open(fileName, this % cmode)
       if (this % io % err % check(msg="Failure creating file "//trim(fileName), &
         line=__LINE__,  &
         file=__FILE__)) then
