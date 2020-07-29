@@ -13,6 +13,12 @@ module swio_data
     real(ESMF_KIND_R8)          :: scaleFactor
   end type
 
+  type SWIO_Mask_T
+    type(ESMF_Field)   :: field
+    real(ESMF_KIND_R8) :: value
+    real(ESMF_KIND_R8) :: fill
+  end type
+
   type SWIO_Pair_T
     character(ESMF_MAXSTR) :: key
     character(ESMF_MAXSTR) :: value
@@ -26,6 +32,7 @@ module swio_data
     character(ESMF_MAXSTR)  :: filePrefix
     character(ESMF_MAXSTR)  :: fileSuffix
     character(2)            :: cmode
+    type(SWIO_Mask_T), pointer :: mask
     type(SWIO_Pair_T), pointer :: meta(:)
     type(SWIO_Pair_T), pointer :: output(:)
     type(SWIO_Task_T), pointer :: task(:)

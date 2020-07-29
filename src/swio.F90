@@ -272,6 +272,7 @@ module SWIO
     this % gridType     = ""
     this % filePrefix   = ""
     this % fileSuffix   = ""
+    nullify(this % mask)
     nullify(this % meta)
     nullify(this % output)
     nullify(this % task)
@@ -810,6 +811,14 @@ module SWIO
 
     ! parse metadata if provided
     call SWIO_MetadataParse(gcomp, label="output_metadata::", &
+      phaseName=rName, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__, &
+      file=__FILE__)) &
+      return  ! bail out
+
+    ! parse masking field
+    call SWIO_OutputMaskParse(gcomp, label="import_mask_field:", &
       phaseName=rName, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__, &
