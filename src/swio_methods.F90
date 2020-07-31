@@ -20,6 +20,7 @@ module swio_methods
   public :: SWIO_MeshWriteCoord
   public :: SWIO_MetadataParse
   public :: SWIO_OutputFieldsParse
+  public :: SWIO_OutputMaskParse
   public :: SWIO_Output
 
 
@@ -53,6 +54,10 @@ module swio_methods
 
   interface SWIO_OutputFieldsParse
     module procedure OutputFieldsParse
+  end interface
+
+  interface SWIO_OutputMaskParse
+    module procedure OutputMaskParse
   end interface
 
   interface SWIO_Output
@@ -828,6 +833,83 @@ contains
 
   end subroutine FieldGetTimeStamp
 
+  subroutine FieldSetMask(field, maskField, maskValue, fillValue, rc)
+    type(ESMF_Field)                :: field
+    type(ESMF_Field),   intent(in)  :: maskField
+    real(ESMF_KIND_R8), intent(in)  :: maskValue
+    real(ESMF_KIND_R8), intent(in)  :: fillValue
+    integer, optional,  intent(out) :: rc
+
+    ! -- local variables
+    integer :: localrc
+    integer :: l, localDe, localDeCount, mrank, rank
+    real(ESMF_KIND_R8), dimension(:,:),   pointer :: mptr2d
+    real(ESMF_KIND_R8), dimension(:,:),   pointer :: fptr2d
+    real(ESMF_KIND_R8), dimension(:,:,:), pointer :: fptr3d
+
+    ! -- begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    call ESMF_FieldGet(field, localDeCount=localDeCount, rank=rank, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    call ESMF_FieldGet(maskField, rank=mrank, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+       line=__LINE__,  &
+       file=__FILE__,  &
+       rcToReturn=rc)) &
+       return  ! bail out
+
+    do localDe = 0, localDeCount-1
+      nullify(mptr2d)
+      select case (mrank)
+        case (2)
+          call ESMF_FieldGet(maskField, localDe=localDe, farrayPtr=mptr2d, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) return  ! bail out
+        case (3)
+          nullify(fptr3d)
+          call ESMF_FieldGet(maskField, localDe=localDe, farrayPtr=fptr3d, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) return  ! bail out
+          mptr2d => fptr3d(:,:,lbound(fptr3d,dim=3))
+      end select
+      if (associated(mptr2d)) then
+        select case (rank)
+          case (2)
+            nullify(fptr2d)
+            call ESMF_FieldGet(field, localDe=localDe, farrayPtr=fptr2d, rc=localrc)
+            if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__,  &
+              rcToReturn=rc)) return  ! bail out
+            where (mptr2d == maskValue) fptr2d = fillValue
+          case (3)
+            nullify(fptr3d)
+            call ESMF_FieldGet(field, localDe=localDe, farrayPtr=fptr3d, rc=localrc)
+            if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__,  &
+              rcToReturn=rc)) return  ! bail out
+            ! -- set mask from top to bottom to prevent issues when mask
+            ! -- and masked fields are the same object
+            do l = ubound(fptr3d,dim=3), lbound(fptr3d,dim=3), -1
+              where (mptr2d == maskValue) fptr3d(:,:,l) = fillValue
+            end do
+        end select
+      end if
+    end do
+
+  end subroutine FieldSetMask
+
   function GridCreateLatLon(gcomp, rc) result (grid)
     type(ESMF_GridComp)            :: gcomp
     integer, optional, intent(out) :: rc
@@ -1128,7 +1210,6 @@ contains
     integer                             :: dimCount
     integer                             :: fieldCount
     integer                             :: itemCount
-    integer                             :: rank
     integer                             :: verbosity
     character(len=15)                   :: timeStamp
     character(len=ESMF_MAXSTR)          :: name
@@ -1138,6 +1219,7 @@ contains
     character(len=ESMF_MAXSTR), pointer :: standardNameList(:)
     type(ESMF_Array)                    :: array
     type(ESMF_Field)                    :: field
+    type(ESMF_Field)                    :: maskField
     type(ESMF_GeomType_Flag)            :: geomtype
     type(ESMF_Grid)                     :: grid
     type(ESMF_Mesh)                     :: mesh
@@ -1235,7 +1317,7 @@ contains
     if (isTimeValid) then
       ! open file
       fileName = trim(this % filePrefix) // "." // timeStamp // "." // trim(this % fileSuffix)
-      call this % io % open(fileName, "c")
+      call this % io % open(fileName, this % cmode)
       if (this % io % err % check(msg="Failure creating file "//trim(fileName), &
         line=__LINE__,  &
         file=__FILE__)) then
@@ -1264,17 +1346,70 @@ contains
         rcToReturn=rc)) &
         return  ! bail out
 
-      ! write select output fields
-      itemCount = 0
-      if (associated(this % output)) itemCount = size(this % output)
-      do item = 1, itemCount
-        call ESMF_StateGet(importState, trim(this % output(item) % key), field, rc=localrc)
+      ! mask output fields using fill value
+      if (associated(this % mask)) then
+        itemCount = 0
+        if (associated(this % output)) itemCount = size(this % output)
+        do item = 1, itemCount
+          call ESMF_StateGet(importState, trim(this % output(item) % key), &
+            field, rc=localrc)
+          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__,  &
+            file=__FILE__,  &
+            rcToReturn=rc)) &
+            return  ! bail out
+          if (field /= this % mask % field) then
+            call FieldSetMask(field, this % mask % field, this % mask % value, &
+              this % mask % fill, rc=localrc)
+            if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__,  &
+              rcToReturn=rc)) &
+              return  ! bail out
+          end if
+        end do
+        itemCount = 0
+        if (associated(this % task)) itemCount = size(this % task)
+        do item = 1, itemCount
+          fieldCount = 0
+          if (associated(this % task(item) % fieldOut)) &
+            fieldCount = size(this % task(item) % fieldOut)
+          do i = 1, fieldCount
+            call FieldSetMask(this % task(item) % fieldOut(i), this % mask % field, &
+              this % mask % value, this % mask % fill, rc=localrc)
+            if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__,  &
+              rcToReturn=rc)) &
+              return  ! bail out
+          end do
+        end do
+        call FieldSetMask(this % mask % field, this % mask % field, &
+          this % mask % value, this % mask % fill, rc=localrc)
         if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
           file=__FILE__,  &
           rcToReturn=rc)) &
           return  ! bail out
-        call ESMF_FieldGet(field, rank=rank, rc=localrc)
+        call this % io % fill(this % mask % fill)
+        if (this % io % err % check(msg="Failure setting fill value in file " &
+          //trim(fileName), &
+          line=__LINE__,  &
+          file=__FILE__)) then
+          call ESMF_LogSetError(ESMF_RC_FILE_CREATE, msg=ESMF_LOGERR_PASSTHRU, &
+            line=__LINE__, &
+            file=__FILE__,  &
+            rcToReturn=rc)
+           return  ! bail out
+        end if
+      end if
+
+      ! write select output fields
+      itemCount = 0
+      if (associated(this % output)) itemCount = size(this % output)
+
+      do item = 1, itemCount
+        call ESMF_StateGet(importState, trim(this % output(item) % key), field, rc=localrc)
         if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
           file=__FILE__,  &
@@ -1731,5 +1866,168 @@ contains
     end if
 
   end subroutine OutputFieldsParse
+
+  subroutine OutputMaskParse(gcomp, label, phaseName, rc)
+    type(ESMF_GridComp)                     :: gcomp
+    character(len=*),           intent(in)  :: label
+    character(len=*), optional, intent(in)  :: phaseName
+    integer,          optional, intent(out) :: rc
+
+    ! local variables
+    logical                             :: isPresent
+    integer                             :: localrc, stat
+    integer                             :: verbosity
+    integer                             :: dimCount
+    character(len=ESMF_MAXSTR)          :: name
+    character(len=ESMF_MAXSTR)          :: pName
+    character(len=ESMF_MAXSTR)          :: fieldName
+    character(len=ESMF_MAXSTR)          :: msgString
+    type(ESMF_Config)                   :: config
+    type(ESMF_Field)                    :: field
+    type(ESMF_Grid)                     :: grid
+    type(ESMF_State)                    :: importState
+    type(SWIO_InternalState_T)          :: is
+    type(SWIO_Data_T), pointer          :: this
+
+    ! begin
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    pName = "OutputMaskParse"
+    if (present(phaseName)) pName = phaseName
+
+    ! get component's info
+    call NUOPC_CompGet(gcomp, name=name, verbosity=verbosity, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! get component's internal state
+    call ESMF_GridCompGetInternalState(gcomp, is, localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+    this => is % wrap
+
+    if (trim(this % gridType) == "none") then
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//&
+          ": Masking only available for local 2D grids", &
+          ESMF_LOGMSG_WARNING, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
+      return
+    end if
+
+    if (this % fieldCount == 0) then
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//trim(pName)//": No input fields", &
+          ESMF_LOGMSG_INFO, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
+      return
+    end if
+
+    ! get component's configuration
+    call ESMF_GridCompGet(gcomp, config=config, importState=importState, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    ! look for compute field table
+    call ESMF_ConfigFindLabel(config, label, isPresent=isPresent, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
+    if (isPresent) then
+
+      ! - get mask field name
+      call ESMF_ConfigGetAttribute(config, fieldName, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      ! -- get field
+      call ESMF_StateGet(importState, trim(fieldName), field, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      call ESMF_FieldGet(field, grid=grid, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      call ESMF_GridGet(grid, dimCount=dimCount, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      if (dimCount /= 2) return
+
+      allocate(this % mask, stat=stat)
+      if (ESMF_LogFoundAllocError(statusToCheck=stat, &
+        msg="Unable to allocate memory", &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      this % mask % field = field
+
+      ! - get mask value
+      call ESMF_ConfigGetAttribute(config, this % mask % value, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      ! - get fill value
+      call ESMF_ConfigGetAttribute(config, this % mask % fill, rc=localrc)
+      if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__,  &
+        rcToReturn=rc)) &
+        return  ! bail out
+
+      if (btest(verbosity,8)) then
+        write(msgString,'(a,": ",a,": masking: fill with ",g0.1," where ",a," == ",g0.1)') &
+          trim(name), trim(pName), this % mask % fill, trim(fieldName), this % mask % value
+        call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
+
+    end if
+
+  end subroutine OutputMaskParse
 
 end module swio_methods

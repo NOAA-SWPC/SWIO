@@ -272,6 +272,7 @@ module SWIO
     this % gridType     = ""
     this % filePrefix   = ""
     this % fileSuffix   = ""
+    nullify(this % mask)
     nullify(this % meta)
     nullify(this % output)
     nullify(this % task)
@@ -764,7 +765,7 @@ module SWIO
     integer                    :: comm
     integer                    :: iofmt
     integer                    :: verbosity
-    character(len=ESMF_MAXSTR) :: ioFormat
+    character(len=ESMF_MAXSTR) :: ioOption
     character(len=ESMF_MAXSTR) :: name, svalue
     type(ESMF_Config)          :: config
     type(ESMF_VM)              :: vm
@@ -816,6 +817,14 @@ module SWIO
       file=__FILE__)) &
       return  ! bail out
 
+    ! parse masking field
+    call SWIO_OutputMaskParse(gcomp, label="import_mask_field:", &
+      phaseName=rName, rc=rc)
+    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__, &
+      file=__FILE__)) &
+      return  ! bail out
+
     ! initialize I/O layer
     if (this % outputCount > 0) then
       ! get component's configuration
@@ -825,6 +834,43 @@ module SWIO
         file=__FILE__)) &
         return  ! bail out
 
+      ! get file create mode
+      call ESMF_ConfigGetAttribute(config, svalue, &
+        label="output_create_mode:", default="clobber", rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+      ioOption = ESMF_UtilStringLowerCase(svalue, rc=rc)
+      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        line=__LINE__,  &
+        file=__FILE__)) &
+        return  ! bail out
+
+      ! convert text to COMIO I/O selector
+      select case (trim(ioOption))
+        case ("clobber")
+          this % cmode = "c"
+        case ("preserve-links")
+          this % cmode = "c+"
+        case default
+          call ESMF_LogSetError(rcToCheck=ESMF_RC_VAL_OUTOFRANGE, &
+            msg="Invalid file create mode", &
+            line=__LINE__, &
+            file=__FILE__, &
+            rcToReturn=rc)
+          return  ! bail out
+      end select
+      if (btest(verbosity,8)) then
+        call ESMF_LogWrite(trim(name)//": "//rName &
+          //": Output create mode set to: "//trim(ioOption), &
+          ESMF_LOGMSG_INFO, rc=rc)
+        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__)) &
+          return  ! bail out
+      end if
+
       ! get I/O format
       call ESMF_ConfigGetAttribute(config, svalue, &
         label="output_format:", default="none", rc=rc)
@@ -832,14 +878,14 @@ module SWIO
         line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
-      ioFormat = ESMF_UtilStringLowerCase(svalue, rc=rc)
+      ioOption = ESMF_UtilStringLowerCase(svalue, rc=rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
 
       ! convert text to COMIO I/O selector
-      select case (trim(ioFormat))
+      select case (trim(ioOption))
         case ("hdf5")
           iofmt = COMIO_FMT_HDF5
           this % fileSuffix = "hd5"
@@ -883,7 +929,7 @@ module SWIO
       if (btest(verbosity,8)) then
         call ESMF_LogWrite(trim(name)//": "//rName//": I/O initialized (COMIO)"&
           //" - Writing to: "//trim(this % filePrefix)//"_YYYYMMDD_hhmmss."&
-          //trim(this % fileSuffix)//" "//trim(ioFormat)//" files", &
+          //trim(this % fileSuffix)//" "//trim(ioOption)//" files", &
           ESMF_LOGMSG_INFO, rc=rc)
         if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
@@ -898,17 +944,17 @@ module SWIO
         line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
-      ioFormat = ESMF_UtilStringLowerCase(svalue, rc=rc)
+      ioOption = ESMF_UtilStringLowerCase(svalue, rc=rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__)) &
         return  ! bail out
 
-      select case (trim(ioFormat))
+      select case (trim(ioOption))
         case ("integer")
           call this % io % writeas(1)
           if (this % io % err % check(&
-            msg="Failure setting output datatype to "//trim(ioFormat), &
+            msg="Failure setting output datatype to "//trim(ioOption), &
             line=__LINE__,  &
             file=__FILE__)) then
             call ESMF_LogSetError(ESMF_RC_OBJ_INIT, msg=ESMF_LOGERR_PASSTHRU, &
@@ -919,7 +965,7 @@ module SWIO
         case ("float")
           call this % io % writeas(1.)
           if (this % io % err % check(&
-            msg="Failure setting output datatype to "//trim(ioFormat), &
+            msg="Failure setting output datatype to "//trim(ioOption), &
             line=__LINE__,  &
             file=__FILE__)) then
             call ESMF_LogSetError(ESMF_RC_OBJ_INIT, msg=ESMF_LOGERR_PASSTHRU, &
@@ -930,7 +976,7 @@ module SWIO
         case ("double")
           call this % io % writeas(1.d0)
           if (this % io % err % check(&
-            msg="Failure setting output datatype to "//trim(ioFormat), &
+            msg="Failure setting output datatype to "//trim(ioOption), &
             line=__LINE__,  &
             file=__FILE__)) then
             call ESMF_LogSetError(ESMF_RC_OBJ_INIT, msg=ESMF_LOGERR_PASSTHRU, &
@@ -942,14 +988,14 @@ module SWIO
           ! do nothing
         case default
           call ESMF_LogSetError(ESMF_RC_NOT_VALID, &
-            msg="Unsupported datatype: "//trim(ioFormat), &
+            msg="Unsupported datatype: "//trim(ioOption), &
             line=__LINE__, &
             file=__FILE__)
           return  ! bail out
       end select
       if (btest(verbosity,8)) then
         call ESMF_LogWrite(trim(name)//": "//rName &
-          //": Output datatype set to: "//trim(ioFormat), &
+          //": Output datatype set to: "//trim(ioOption), &
           ESMF_LOGMSG_INFO, rc=rc)
         if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__,  &
