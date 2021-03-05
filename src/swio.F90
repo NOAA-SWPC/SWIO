@@ -276,7 +276,6 @@ module SWIO
     nullify(this % meta)
     nullify(this % output)
     nullify(this % task)
-    nullify(this % io)
 
     ! get output grid selection
     call ESMF_ConfigGetAttribute(config, this % gridType, &
@@ -917,11 +916,9 @@ module SWIO
         return  ! bail out
   
       ! initialize COMIO
-      this % io => COMIO_T(fmt=iofmt, comm=comm)
-      if (this % io % err % check(msg="Failure initializing I/O", &
-        line=__LINE__,  &
-        file=__FILE__)) then
-        call ESMF_LogSetError(ESMF_RC_OBJ_INIT, msg=ESMF_LOGERR_PASSTHRU, &
+      call COMIO_Create(this % io, iofmt, comm=comm, rc=rc)
+      if (rc /= 0) then
+        call ESMF_LogSetError(ESMF_RC_OBJ_INIT, msg="Failure initializing I/O", &
           line=__LINE__, &
           file=__FILE__)
         return  ! bail out
@@ -1132,7 +1129,7 @@ module SWIO
       return  ! bail out
 
     if (associated(is % wrap)) then
-      if (associated(is % wrap % io)) then
+      if (allocated(is % wrap % io)) then
         ! shutdown I/O layer
         call is % wrap % io % shutdown()
         if (ESMF_LogFoundError(rcToCheck=is % wrap % io % err % rc, msg=ESMF_LOGERR_PASSTHRU, &
