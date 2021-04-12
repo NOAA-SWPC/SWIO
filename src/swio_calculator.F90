@@ -59,7 +59,6 @@ contains
     character(len=ESMF_MAXSTR)          :: msgString
     character(len=ESMF_MAXSTR), pointer :: standardNameList(:)
     type(ESMF_Config)                   :: config
-    type(ESMF_Field)                    :: field
     type(ESMF_State)                    :: importState
     type(SWIO_InternalState_T)          :: is
     type(SWIO_Data_T), pointer          :: this
@@ -336,6 +335,16 @@ contains
         end if
       end do
 
+      if (associated(standardNameList)) then
+        deallocate(standardNameList, stat=stat)
+        if (ESMF_LogFoundDeallocError(statusToCheck=stat, &
+          msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end if
+
     end if
 
     this % outputCount = this % outputCount + item
@@ -417,15 +426,12 @@ contains
     integer,          optional, intent(out) :: rc
 
     ! local variables
-    logical                             :: isPresent
     integer                             :: localrc
-    integer                             :: i, iop, item, stat
+    integer                             :: item
     integer                             :: verbosity
     character(len=ESMF_MAXSTR)          :: name
     character(len=ESMF_MAXSTR)          :: msgString
     character(len=ESMF_MAXSTR)          :: pName
-    character(len=ESMF_MAXSTR), pointer :: standardNameList(:)
-    type(ESMF_Field)                    :: field
     type(SWIO_InternalState_T)          :: is
     type(SWIO_Data_T), pointer          :: this
 
@@ -752,9 +758,6 @@ contains
     type(SWIO_Task_T), intent(in)  :: task
     type(SWIO_Math_T), intent(in)  :: table
     integer, optional, intent(out) :: rc
-
-    ! -- local variables
-    integer :: item
 
     ! -- begin
     IsTaskValid = .false.
