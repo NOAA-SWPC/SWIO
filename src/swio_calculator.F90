@@ -429,6 +429,7 @@ contains
     integer                             :: localrc
     integer                             :: item
     integer                             :: verbosity
+    logical                             :: isValid
     character(len=ESMF_MAXSTR)          :: name
     character(len=ESMF_MAXSTR)          :: msgString
     character(len=ESMF_MAXSTR)          :: pName
@@ -460,28 +461,37 @@ contains
 
     ! run calculator's tasks
     do item = 1, size(this % task)
-      call Calculate(this % task(item), rc=localrc)
+      ! skip if timestamp of input fields is invalid
+      isValid = isTimeValid(this % task(item), rc=localrc)
       if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__,  &
         rcToReturn=rc)) &
         return  ! bail out
-      if (btest(verbosity,8)) then
-          write(msgString,'(a,": computed[",i0,"]: ")') trim(name) &
-            //": "//trim(pName), item
-          call AppendArgumentListString(msgString, this % task(item) % fieldOut, &
-            rc=localrc)
-          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__,  &
-            file=__FILE__,  &
-            rcToReturn=rc)) &
-            return  ! bail out
-          call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=localrc)
-          if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__,  &
-            file=__FILE__,  &
-            rcToReturn=rc)) &
-            return  ! bail out
+      if (isValid) then
+        call Calculate(this % task(item), rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+        if (btest(verbosity,8)) then
+            write(msgString,'(a,": computed[",i0,"]: ")') trim(name) &
+              //": "//trim(pName), item
+            call AppendArgumentListString(msgString, this % task(item) % fieldOut, &
+              rc=localrc)
+            if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__,  &
+              rcToReturn=rc)) &
+              return  ! bail out
+            call ESMF_LogWrite(trim(msgString), ESMF_LOGMSG_INFO, rc=localrc)
+            if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+              line=__LINE__,  &
+              file=__FILE__,  &
+              rcToReturn=rc)) &
+              return  ! bail out
+        end if
       end if
     end do
 
@@ -823,6 +833,33 @@ contains
 
   end function IsTaskValid
 
+  logical function IsTimeValid(task, rc)
+    type(SWIO_Task_T), intent(in)  :: task
+    integer, optional, intent(out) :: rc
+
+    ! -- local variables
+    integer :: localrc
+    integer :: item
+
+    ! -- begin
+    IsTimeValid = .false.
+    if (present(rc)) rc = ESMF_SUCCESS
+
+    if (associated(task % fieldInp)) then
+      IsTimeValid = size(task % fieldInp) > 0
+      item = 0
+      do while (IsTimeValid .and. (item < size(task % fieldInp)))
+        item = item + 1
+        call NUOPC_GetTimestamp(task % fieldInp(item), isValid=IsTimeValid, rc=localrc)
+        if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+          line=__LINE__,  &
+          file=__FILE__,  &
+          rcToReturn=rc)) &
+          return  ! bail out
+      end do
+    end if
+
+  end function IsTimeValid
 
   ! -- Available math functions
 
