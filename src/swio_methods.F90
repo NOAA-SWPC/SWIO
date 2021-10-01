@@ -1424,7 +1424,7 @@ contains
           return  ! bail out
         if (btest(verbosity,8)) then
           call ESMF_LogWrite(trim(name)//": "//trim(pName)//": Written "&
-            //trim(standardNameList(item)), ESMF_LOGMSG_INFO, rc=localrc)
+            //trim(this % output(item) % value), ESMF_LOGMSG_INFO, rc=localrc)
           if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
             line=__LINE__,  &
             file=__FILE__,  &
