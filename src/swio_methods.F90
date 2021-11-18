@@ -930,6 +930,7 @@ contains
     real(ESMF_KIND_R8), pointer     :: coordPtr(:)
     real(ESMF_KIND_R8), allocatable :: levelValues(:)
     type(ESMF_Config)               :: config
+    type(ESMF_Info)                 :: info
     type(ESMF_StaggerLoc)           :: staggerloc
 
     ! local parameters
@@ -1144,16 +1145,14 @@ contains
     ! add ungridded dimension if needed
     if (ungriddedDimLength > 0) then
       ! record ungridded dimension size as ESMF Attribute
-      call ESMF_AttributeAdd(grid, convention="NUOPC", purpose="Instance", &
-        attrList=(/ "UngriddedDimLength" /), rc=localrc)
+      call ESMF_InfoGetFromHost(grid, info, rc=localrc)
       if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__,  &
         rcToReturn=rc)) &
         return  ! bail out
-
-      call ESMF_AttributeSet(grid, name="UngriddedDimLength", &
-        value=ungriddedDimLength, convention="NUOPC", purpose="Instance", rc=localrc)
+      call ESMF_InfoSet(info, key="/NUOPC/Instance/UngriddedDimLength", &
+        value=ungriddedDimLength, rc=localrc)
       if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__,  &
         file=__FILE__,  &

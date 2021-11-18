@@ -128,6 +128,7 @@ module SWIO
     integer, intent(out)  :: rc
 
     ! local variables
+    logical                    :: isPresent, isSet
     integer                    :: verbosity
     character(len=ESMF_MAXSTR) :: name, value
     type(ESMF_Config)          :: config
@@ -153,12 +154,13 @@ module SWIO
       return  ! bail out
 
     ! get name of config file
-    call ESMF_AttributeGet(gcomp, name="ConfigFile", value=value, &
-      defaultValue="swio.conf", convention="NUOPC", purpose="Instance", rc=rc)
+    call NUOPC_CompAttributeGet(gcomp, name="ConfigFile", value=value, &
+      isPresent=isPresent, isSet=isSet, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__)) &
       return  ! bail out
+    if (.not.isSet) value = "swio.rc"
     if (btest(verbosity,8)) then
       call ESMF_LogWrite(trim(name)//": ConfigFile = "//trim(value), &
         ESMF_LOGMSG_INFO, rc=rc)
@@ -412,6 +414,7 @@ module SWIO
     character(ESMF_MAXSTR), pointer :: standardNameList(:)
     type(ESMF_Field)                :: field
     type(ESMF_Grid)                 :: grid
+    type(ESMF_Info)                 :: info
     type(SWIO_InternalState_T)      :: is
     type(SWIO_Data_T), pointer      :: this
 
@@ -477,7 +480,7 @@ module SWIO
           line=__LINE__,  &
           file=__FILE__)) &
           return  ! bail out
-        call NUOPC_GetAttribute(field, name="TransferActionGeomObject", &
+        call NUOPC_GetAttribute(field, name="ConsumerTransferAction", &
           value=transferAction, rc=rc)
         if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__, &
@@ -485,7 +488,7 @@ module SWIO
           return  ! bail out
         if (btest(verbosity,8)) then
           call ESMF_LogWrite(trim(name)//": "//rName &
-            //": TransferActionGeomObject = "//trim(transferAction), ESMF_LOGMSG_INFO, rc=rc)
+            //": ConsumerTransferAction = "//trim(transferAction), ESMF_LOGMSG_INFO, rc=rc)
           if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
             line=__LINE__,  &
             file=__FILE__)) &
@@ -507,17 +510,20 @@ module SWIO
                   line=__LINE__,  &
                   file=__FILE__)) &
                   return  ! bail out
-                call ESMF_AttributeGet(grid, name="UngriddedDimLength", &
-                  convention="NUOPC", purpose="Instance", isPresent=isPresent, &
-                  rc=rc)
+                call ESMF_InfoGetFromHost(grid, info, rc=rc)
+                if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+                  line=__LINE__,  &
+                  file=__FILE__)) &
+                  return  ! bail out
+                isPresent = ESMF_InfoIsPresent(info, &
+                  key="/NUOPC/Instance/UngriddedDimLength", rc=rc)
                 if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
                   line=__LINE__,  &
                   file=__FILE__)) &
                   return  ! bail out
                 if (isPresent) then
-                  call ESMF_AttributeGet(grid, name="UngriddedDimLength", &
-                    value=ungriddedDimLength, convention="NUOPC", &
-                    purpose="Instance", rc=rc)
+                  call ESMF_InfoGet(info, key="/NUOPC/Instance/UngriddedDimLength", &
+                    value=ungriddedDimLength, rc=rc)
                   if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
                     line=__LINE__,  &
                     file=__FILE__)) &
@@ -669,7 +675,7 @@ module SWIO
           line=__LINE__,  &
           file=__FILE__)) &
           return  ! bail out
-        call NUOPC_GetAttribute(field, name="TransferActionGeomObject", &
+        call NUOPC_GetAttribute(field, name="ConsumerTransferAction", &
           value=transferAction, rc=rc)
         if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__, &
@@ -677,7 +683,7 @@ module SWIO
           return  ! bail out
         if (btest(verbosity,8)) then
           call ESMF_LogWrite(trim(name)//": "//rName &
-            //": TransferActionGeomObject = "//trim(transferAction), ESMF_LOGMSG_INFO, rc=rc)
+            //": ConsumerTransferAction = "//trim(transferAction), ESMF_LOGMSG_INFO, rc=rc)
           if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
             line=__LINE__,  &
             file=__FILE__)) &
