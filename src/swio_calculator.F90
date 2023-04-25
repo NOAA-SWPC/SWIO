@@ -567,6 +567,7 @@ contains
     type(ESMF_Field)         :: fieldOut
     type(ESMF_Grid)          :: grid
     type(ESMF_GeomType_Flag) :: geomType
+    type(ESMF_Info)          :: info
     type(ESMF_Mesh)          :: mesh
     type(ESMF_MeshLoc)       :: meshloc
     type(ESMF_StaggerLoc)    :: staggerloc
@@ -724,29 +725,31 @@ contains
       rcToReturn=rc)) &
       return  ! bail out
 
+    ! - retrieve field's info object
+    call ESMF_InfoGetFromHost(fieldOut, info, rc=localrc)
+    if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
+      line=__LINE__,  &
+      file=__FILE__,  &
+      rcToReturn=rc)) &
+      return  ! bail out
+
     ! - add name and units
-    call ESMF_AttributeSet(fieldOut, &
-      name="StandardName", value=name, &
-      convention="NUOPC", purpose="Instance", attnestflag=ESMF_ATTNEST_ON, &
-      rc=localrc)
+    call ESMF_InfoSet(info, key="/NUOPC/Instance/StandardName", &
+      value=trim(name), rc=localrc)
     if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__,  &
       rcToReturn=rc)) &
       return  ! bail out
-    call ESMF_AttributeSet(fieldOut, &
-      name="LongName", value=name, &
-      convention="NUOPC", purpose="Instance", attnestflag=ESMF_ATTNEST_ON, &
-      rc=localrc)
+    call ESMF_InfoSet(info, key="/NUOPC/Instance/LongName", &
+      value=trim(name), rc=localrc)
     if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__,  &
       rcToReturn=rc)) &
       return  ! bail out
-    call ESMF_AttributeSet(fieldOut, &
-      name="Units", value=units, &
-      convention="NUOPC", purpose="Instance", attnestflag=ESMF_ATTNEST_ON, &
-      rc=localrc)
+    call ESMF_InfoSet(info, key="/NUOPC/Instance/Units", &
+      value=trim(units), rc=localrc)
     if (ESMF_LogFoundError(rcToCheck=localrc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__,  &
       file=__FILE__,  &
